@@ -632,7 +632,7 @@
 
 (define_insn "*tb<optab><mode>1"
   [(set (pc) (if_then_else
-	      (EQL (zero_extract:DI (match_operand:GPI 0 "register_operand" "r")
+	      (EQL (zero_extract:DI (match_operand:ALLI 0 "register_operand" "r")
 				    (const_int 1)
 				    (match_operand 1
 				      "aarch64_simd_shift_imm_<mode>" "n"))
