@@ -3442,6 +3442,17 @@
   [(set_attr "type" "logic_reg,logic_imm")]
 )
 
+;; zero_extend version of above
+(define_insn "*and<mode>3_zeroextend"
+  [(set (match_operand:GPI 0 "register_operand" "=r")
+        (zero_extend:GPI
+          (and:ALLX (match_operand:ALLX 1 "register_operand" "r")
+                    (match_operand:ALLX 2 "const_int_operand" "<andconst>"))))]
+  ""
+  "and\\t%w0, %w1, %w2"
+  [(set_attr "type" "logic_imm")]
+)
+
 (define_insn "*and<mode>3_compare0"
   [(set (reg:CC_NZ CC_REGNUM)
 	(compare:CC_NZ
@@ -3457,12 +3468,28 @@
   [(set_attr "type" "logics_reg,logics_imm")]
 )
 
+;; special variant for HI and QI operators (implicitly zero-extending)
+(define_insn "*and<mode>3_compare0"
+  [(set (reg:CC_NZ CC_REGNUM)
+        (compare:CC_NZ
+                (and:GPI (match_operand:SHORT 1 "register_operand" "%r,r")
+                         (match_operand:SHORT 2 "aarch64_logical_operand" "r,<andconst>"))
+                (const_int 0)))
+   (set (match_operand:GPI 0 "register_operand" "=r,r")
+        (and:GPI (match_dup 1) (match_dup 2)))]
+  ""
+  "@
+   ands\\t%<w>0, %<w>1, %<w>2
+   ands\\t%<w>0, %<w>1, %2"
+  [(set_attr "type" "logic_reg,logic_imm")]
+)
+
 ;; zero_extend version of above
 (define_insn "*andsi3_compare0_uxtw"
   [(set (reg:CC_NZ CC_REGNUM)
 	(compare:CC_NZ
-	 (and:SI (match_operand:SI 1 "register_operand" "%r,r")
-		 (match_operand:SI 2 "aarch64_logical_operand" "r,K"))
+	 (and:SI (match_operand:ALLX 1 "register_operand" "%r,r")
+		 (match_operand:ALLX 2 "aarch64_logical_operand" "r,K"))
 	 (const_int 0)))
    (set (match_operand:DI 0 "register_operand" "=r,r")
 	(zero_extend:DI (and:SI (match_dup 1) (match_dup 2))))]
@@ -3503,6 +3530,23 @@
   ""
   "ands\\t%w0, %w3, %w1, <SHIFT:shift> %2"
   [(set_attr "type" "logics_shift_imm")]
+)
+
+;; specialized form for bitfield tests
+(define_insn "*ands<mode>3_zeroextract_internal2"
+  [(set (reg:CC_NZ CC_REGNUM)
+        (compare:CC_NZ
+         (zero_extract:GPI (match_operand:GPI 0 "register_operand" "r")
+                           (match_operand 1 "const_int_operand" "n")
+                           (match_operand 2 "const_int_operand" "n"))
+         (const_int 0)))]
+  "aarch64_bitmask_imm((((HOST_WIDE_INT)1 << (UINTVAL(operands[1]))) - 1) << UINTVAL(operands[2]), <MODE>mode)"
+  "*
+  {
+    operands[3] = GEN_INT((((HOST_WIDE_INT)1 << (UINTVAL(operands[1]))) - 1) << UINTVAL(operands[2]));
+    return \"ands\\t<w>zr, %<w>0, %<w>3\";
+  }"
+  [(set_attr "type" "logics_reg")]
 )
 
 (define_insn "*<LOGICAL:optab>_<SHIFT:optab><mode>3"

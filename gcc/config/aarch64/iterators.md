@@ -442,6 +442,7 @@
 
 ;; Attribute to describe constants acceptable in logical operations
 (define_mode_attr lconst [(SI "K") (DI "L")])
+(define_mode_attr andconst [(QI "K") (HI "K") (SI "K") (DI "L")])
 
 ;; Attribute to describe constants acceptable in logical and operations
 (define_mode_attr lconst2 [(SI "UsO") (DI "UsP")])
@@ -815,6 +816,7 @@
 
 ;; Code iterator for logical operations
 (define_code_iterator LOGICAL [and ior xor])
+(define_code_iterator OR [ior xor])
 
 ;; Code iterator for logical operations whose :nlogical works on SIMD registers.
 (define_code_iterator NLOGICAL [and ior])
