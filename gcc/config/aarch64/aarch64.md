@@ -3443,12 +3443,12 @@
 )
 
 ;; zero_extend version of above
-(define_insn "*and<mode>3_zeroextend"
+(define_insn "*and<mode>3_zeroextend<ALLX:mode>"
   [(set (match_operand:GPI 0 "register_operand" "=r")
         (zero_extend:GPI
           (and:ALLX (match_operand:ALLX 1 "register_operand" "r")
                     (match_operand:ALLX 2 "const_int_operand" "<andconst>"))))]
-  ""
+  "UINTVAL(operands[2]) < (1 << GET_MODE_BITSIZE (<ALLX:MODE>mode))"
   "and\\t%w0, %w1, %w2"
   [(set_attr "type" "logic_imm")]
 )
