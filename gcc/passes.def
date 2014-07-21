@@ -45,6 +45,7 @@ along with GCC; see the file COPYING3.  If not see
   NEXT_PASS (pass_sprintf_length, false);
   NEXT_PASS (pass_walloca, /*strict_mode_p=*/true);
   NEXT_PASS (pass_build_cgraph_edges);
+  NEXT_PASS (pass_uninline_innermost_loops);
   TERMINATE_PASS_LIST (all_lowering_passes)
 
   /* Interprocedural optimization passes.  */
@@ -209,6 +210,7 @@ along with GCC; see the file COPYING3.  If not see
       NEXT_PASS (pass_thread_jumps);
       NEXT_PASS (pass_vrp, true /* warn_array_bounds_p */);
       NEXT_PASS (pass_chkp_opt);
+      NEXT_PASS (pass_peel_last_iteration);
       NEXT_PASS (pass_dce);
       NEXT_PASS (pass_stdarg);
       NEXT_PASS (pass_call_cdce);

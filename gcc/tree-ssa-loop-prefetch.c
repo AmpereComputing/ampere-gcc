@@ -158,7 +158,7 @@ along with GCC; see the file COPYING3.  If not see
 /* True if read can be prefetched by a write prefetch. */
 
 #ifndef READ_CAN_USE_WRITE_PREFETCH
-#define READ_CAN_USE_WRITE_PREFETCH 0
+#define READ_CAN_USE_WRITE_PREFETCH 1
 #endif
 
 /* The size of the block loaded by a single prefetch.  Usually, this is
@@ -172,7 +172,7 @@ along with GCC; see the file COPYING3.  If not see
 /* Do we have a forward hardware sequential prefetching?  */
 
 #ifndef HAVE_FORWARD_PREFETCH
-#define HAVE_FORWARD_PREFETCH 0
+#define HAVE_FORWARD_PREFETCH 1
 #endif
 
 /* Do we have a backward hardware sequential prefetching?  */

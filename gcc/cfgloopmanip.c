@@ -1545,8 +1545,17 @@ create_preheader (struct loop *loop, int flags)
                        || has_preds_from_loop (single_entry->src, loop)))
             need_forwarder_block = true;
         }
+      /* FIXME Use the flags in a more sensible way. */
       if (! need_forwarder_block)
-	return NULL;
+        {
+          if (flags != 128)
+            return NULL;
+          else
+            {
+              if (dump_file)
+                fprintf (dump_file, "would return null\n");
+            }
+        }
     }
 
   mfb_kj_edge = loop_latch_edge (loop);

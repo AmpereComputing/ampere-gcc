@@ -2626,6 +2626,10 @@ fsplit-loops
 Common Report Var(flag_split_loops) Optimization
 Perform loop splitting.
 
+fnoalias=
+Common Joined Var(noalias) Init(0)
+Move innermost loops to separate function
+
 funwind-tables
 Common Report Var(flag_unwind_tables) Optimization
 Just generate unwind tables for exception handling.
