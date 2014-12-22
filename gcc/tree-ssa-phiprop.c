@@ -465,6 +465,7 @@ public:
   {}
 
   /* opt_pass methods: */
+  opt_pass * clone () { return new pass_phiprop (m_ctxt); }
   virtual bool gate (function *) { return flag_tree_phiprop; }
   virtual unsigned int execute (function *);
 

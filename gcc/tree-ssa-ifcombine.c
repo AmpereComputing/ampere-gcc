@@ -789,6 +789,7 @@ public:
   {}
 
   /* opt_pass methods: */
+  opt_pass * clone () { return new pass_tree_ifcombine (m_ctxt); }
   virtual unsigned int execute (function *);
 
 }; // class pass_tree_ifcombine

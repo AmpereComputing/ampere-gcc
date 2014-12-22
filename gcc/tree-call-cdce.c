@@ -1101,12 +1101,14 @@ public:
   {}
 
   /* opt_pass methods: */
-  virtual bool gate (function *)
+  opt_pass * clone () { return new pass_call_cdce (m_ctxt); }
+  virtual bool gate (function *fun)
     {
       /* The limit constants used in the implementation
 	 assume IEEE floating point format.  Other formats
 	 can be supported in the future if needed.  */
-      return flag_tree_builtin_call_dce != 0;
+      return flag_tree_builtin_call_dce != 0
+       	&& optimize_function_for_speed_p (fun);
     }
 
   virtual unsigned int execute (function *);

@@ -2550,6 +2550,7 @@ public:
   {}
 
   /* opt_pass methods: */
+  opt_pass * clone () { return new pass_cselim (m_ctxt); }
   virtual bool gate (function *) { return flag_tree_cselim; }
   virtual unsigned int execute (function *) { return tree_ssa_cs_elim (); }
 
