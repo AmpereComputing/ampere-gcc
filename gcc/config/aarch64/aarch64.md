@@ -3448,7 +3448,7 @@
         (zero_extend:GPI
           (and:ALLX (match_operand:ALLX 1 "register_operand" "r")
                     (match_operand:ALLX 2 "const_int_operand" "<andconst>"))))]
-  "UINTVAL(operands[2]) < (1 << GET_MODE_BITSIZE (<ALLX:MODE>mode))"
+  "UINTVAL(operands[2]) < ((unsigned HOST_WIDE_INT) 1 << GET_MODE_BITSIZE (<ALLX:MODE>mode))"
   "and\\t%w0, %w1, %w2"
   [(set_attr "type" "logic_imm")]
 )

@@ -2630,6 +2630,10 @@ fnoalias=
 Common Joined Var(noalias) Init(0)
 Move innermost loops to separate function
 
+flist-find-pipeline
+Common Report Var(list_find_pipe) Optimization
+Pipeline the find operation in a linked list.
+
 funwind-tables
 Common Report Var(flag_unwind_tables) Optimization
 Just generate unwind tables for exception handling.
