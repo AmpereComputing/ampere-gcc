@@ -1564,6 +1564,7 @@ OBJS = \
 	tree.o \
 	typed-splay-tree.o \
         uninline-innermost-loops.o \
+        uncse.o \
 	valtrack.o \
 	value-prof.o \
 	var-tracking.o \
@@ -2540,7 +2541,7 @@ ALL_GTFILES_H := $(sort $(GTFILES_H) $(GTFILES_LANG_H))
 $(ALL_GTFILES_H) gtype-desc.c gtype-desc.h gtype.state: s-gtype ; @true
 
 ### Common flags to gengtype [e.g. -v or -B backupdir]
-GENGTYPE_FLAGS= 
+GENGTYPE_FLAGS=
 
 gtyp-input.list: s-gtyp-input ; @true
 s-gtyp-input: Makefile

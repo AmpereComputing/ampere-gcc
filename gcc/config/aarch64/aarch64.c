@@ -252,8 +252,8 @@ static const struct cpu_addrcost_table xgene1_addrcost_table =
   1, /* pre_modify  */
   0, /* post_modify  */
   0, /* register_offset  */
-  1, /* register_sextend  */
-  1, /* register_zextend  */
+  0, /* register_sextend  */
+  0, /* register_zextend  */
   0, /* imm_offset  */
 };
 
@@ -14841,33 +14841,40 @@ xgene1_strip_extended_register (rtx op, int *cost, bool speed ATTRIBUTE_UNUSED, 
       inside another operation such as (plus (mult X const)).  Instead,
       aarch64.md recognizes it as an operation with an embedded shift,
       and we charge a cost accordingly. */
-  if (GET_CODE (op) == MULT)
+  if (GET_CODE (op) == MULT
+      || GET_CODE (op) == ASHIFT)
     {
       rtx op0 = XEXP (op, 0);
       rtx op1 = XEXP (op, 1);
 
-      if (CONST_INT_P (op1)
-          && exact_log2 (INTVAL (op1)) > 0)
-        {
-          if (exact_log2 (INTVAL (op1)) <= 4)
-            {
-              *cost += COSTS_N_INSNS(1);
+      int shift = 0;
 
-              /* The extended register form can include a zero-
-                 or sign-extend for free. */
-              if (GET_CODE (op0) == ZERO_EXTEND
-                  || GET_CODE (op1) == SIGN_EXTEND)
-                return XEXP (op0, 0);
-              else
-                return op0;
-            }
+      if (CONST_INT_P (op1))
+        {
+          shift = INTVAL (op1);
+
+          if (GET_CODE (op) == MULT)
+            shift = exact_log2 (shift);
+        }
+
+      if (shift > 4)
+        {
+          /* The shifted register form can support a larger
+             left shift, but cannot include a free extend. */
+          *cost += COSTS_N_INSNS(2);
+          return op0;
+        }
+      else if (shift > 0)
+        {
+          *cost += COSTS_N_INSNS(1);
+
+          /* The extended register form can include a zero-
+             or sign-extend for free. */
+          if (GET_CODE (op0) == ZERO_EXTEND
+              || GET_CODE (op0) == SIGN_EXTEND)
+            return XEXP (op0, 0);
           else
-            {
-              /* The shifted register form can support a larger
-                 left shift, but cannot include a free extend. */
-              *cost += COSTS_N_INSNS(2);
-              return op0;
-            }
+            return op0;
         }
     }
 
@@ -14929,7 +14936,14 @@ xgene1_rtx_costs (rtx x, machine_mode mode, int code, int outer ATTRIBUTE_UNUSED
       if (x == const0_rtx)
         *cost = 0;
       else
-        *cost += COSTS_N_INSNS(1); /* base cost */
+	{
+	  /* To an approximation, building any other constant is
+	     proportionally expensive to the number of instructions
+	     required to build that constant.  This is true whether we
+	     are compiling for SPEED or otherwise.  */
+	  *cost = COSTS_N_INSNS (aarch64_internal_mov_immediate
+				 (NULL_RTX, x, false, mode));
+	}
       return true;
 
     case CONST_DOUBLE:
@@ -14953,7 +14967,7 @@ xgene1_rtx_costs (rtx x, machine_mode mode, int code, int outer ATTRIBUTE_UNUSED
 
           /* Add the cost of complex addressing modes.  */
           addr = XEXP(op0, 0);
-          *cost += aarch64_address_cost(addr, word_mode, 0, speed);
+          *cost += COSTS_N_INSNS(aarch64_address_cost(addr, mode, 0, speed));
 	  return true;
 
 	case SUBREG:
@@ -14969,7 +14983,7 @@ xgene1_rtx_costs (rtx x, machine_mode mode, int code, int outer ATTRIBUTE_UNUSED
                  previously calculated value of n_minus_1 is not
                  useful.  */
               n_minus_1 = (GET_MODE_SIZE (GET_MODE (SET_DEST (x))) - 1) / UNITS_PER_WORD;
-              *cost = COSTS_N_INSNS(n_minus_1 + 16);
+              *cost = COSTS_N_INSNS(n_minus_1 + 16); /* Why +16 instead of +1 */
               return true;
             }
           else
@@ -14979,7 +14993,8 @@ xgene1_rtx_costs (rtx x, machine_mode mode, int code, int outer ATTRIBUTE_UNUSED
               return true;
             }
 
-	case ZERO_EXTRACT: 
+	case ZERO_EXTRACT:
+        case SIGN_EXTRACT:
 	  /* Bit-field insertion.  */
 	  /* Strip any redundant widening of the RHS to meet the width
 	     of the target.  */
@@ -15028,7 +15043,7 @@ xgene1_rtx_costs (rtx x, machine_mode mode, int code, int outer ATTRIBUTE_UNUSED
 
       /* Add the cost of complex addressing modes.  */
       addr = XEXP(x, 0);
-      *cost += aarch64_address_cost(addr, word_mode, 0, speed);
+      *cost += aarch64_address_cost(addr, mode, 0, speed);
       return true;
 
     case COMPARE:
@@ -15093,7 +15108,7 @@ xgene1_rtx_costs (rtx x, machine_mode mode, int code, int outer ATTRIBUTE_UNUSED
           }
           goto cost_minus_int;
         }
-      
+
       /* Support for CMP (FP) */
       if (GET_MODE_CLASS (GET_MODE (op0)) == MODE_FLOAT)
         {
@@ -15348,7 +15363,7 @@ xgene1_rtx_costs (rtx x, machine_mode mode, int code, int outer ATTRIBUTE_UNUSED
 
           /* UBFM/SBFM can incorporate zero/sign extend for free.  */
           if (GET_CODE (op0) == ZERO_EXTEND
-              || GET_CODE (op1) == SIGN_EXTEND)
+              || GET_CODE (op0) == SIGN_EXTEND)
             op0 = XEXP (op0, 0);
 
           *cost += rtx_cost (op0, mode, ASHIFT, 0, speed);
@@ -15532,7 +15547,7 @@ xgene1_rtx_costs (rtx x, machine_mode mode, int code, int outer ATTRIBUTE_UNUSED
         {
           /* There is no integer SQRT, so only DIV and UDIV can get
 	     here.  */
-          /* Integer divide of a register is variable latency.  
+          /* Integer divide of a register is variable latency.
              Without data, I assume an average of 16 cycles.  */
           /* Integer divide of a constant has known latency
              depending on the constant.  However, GCC can't
@@ -15575,7 +15590,7 @@ xgene1_rtx_costs (rtx x, machine_mode mode, int code, int outer ATTRIBUTE_UNUSED
               return true;
             }
         }
-      else { 
+      else {
 	if ( (GET_CODE(op0) == EQ || GET_CODE(op0) == NE || GET_CODE(op0) == GT || GET_CODE(op0) == GTU
 	      || GET_CODE(op0) == LT || GET_CODE(op0) == LTU || GET_CODE(op0) == GE || GET_CODE(op0) == GEU
 	      || GET_CODE(op0) == LE || GET_CODE(op0) == LEU)
