@@ -737,23 +737,23 @@ static const struct tune_params thunderx_tunings =
 static const struct tune_params xgene1_tunings =
 {
   &xgene1_extra_costs,
-  &xgene1_addrcost_table,
-  &xgene1_regmove_cost,
+  &generic_addrcost_table,
+  &generic_regmove_cost,
   &xgene1_vector_cost,
   &generic_branch_cost,
-  &xgene1_approx_modes,
-  6, /* memmov_cost  */
-  4, /* issue_rate  */
+  &generic_approx_modes,
+  4, /* memmov_cost  */
+  2, /* issue_rate  */
   AARCH64_FUSE_NOTHING, /* fusible_ops  */
-  16,	/* function_align.  */
+  8,	/* function_align.  */
   8,	/* jump_align.  */
-  16,	/* loop_align.  */
+  4,	/* loop_align.  */
   2,	/* int_reassoc_width.  */
   4,	/* fp_reassoc_width.  */
   1,	/* vec_reassoc_width.  */
   2,	/* min_div_recip_mul_sf.  */
   2,	/* min_div_recip_mul_df.  */
-  0,	/* max_case_values.  */
+  17,	/* max_case_values.  */
   0,	/* cache_line_size.  */
   tune_params::AUTOPREFETCHER_OFF,	/* autoprefetcher_model.  */
   (AARCH64_EXTRA_TUNE_NONE)	/* tune_flags.  */
