@@ -3121,6 +3121,8 @@ pass_fold_builtins::execute (function *fun)
   basic_block bb;
   unsigned int todoflags = 0;
 
+  loop_optimizer_init (LOOPS_HAVE_SIMPLE_LATCHES | LOOPS_HAVE_PREHEADERS);
+
   FOR_EACH_BB_FN (bb, fun)
     {
       gimple_stmt_iterator i;
