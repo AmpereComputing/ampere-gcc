@@ -2864,6 +2864,18 @@ vect_slp_analyze_operations (vec_info *vinfo)
 	  vect_free_slp_instance (instance);
           vinfo->slp_instances.ordered_remove (i);
 	}
+      else if (flag_vectorize_more && i > 0)
+	{
+	  dump_printf_loc (MSG_NOTE, vect_location,
+			   "removing SLP instance operations starting from: ");
+	  dump_gimple_stmt (MSG_NOTE, TDF_SLIM,
+			    SLP_TREE_SCALAR_STMTS
+			      (SLP_INSTANCE_TREE (instance))[0], 0);
+	  dump_printf_loc (MSG_NOTE, vect_location,
+			   "remove all but first instance\n");
+	  vect_free_slp_instance (instance);
+          vinfo->slp_instances.ordered_remove (i);
+	}
       else
 	i++;
     }

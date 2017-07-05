@@ -2715,6 +2715,10 @@ funroll-more
 Common Report Var(flag_unroll_more) Optimization
 Unroll a bit more.
 
+fvectorize-more
+Common Report Var(flag_vectorize_more) Optimization
+Vectorize a bit more.
+
 funwind-tables
 Common Report Var(flag_unwind_tables) Optimization
 Just generate unwind tables for exception handling.
