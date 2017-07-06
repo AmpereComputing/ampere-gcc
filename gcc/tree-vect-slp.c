@@ -2566,6 +2566,11 @@ vect_bb_slp_scalar_cost (basic_block bb,
   gimple *stmt;
   slp_tree child;
 
+  auto_vec<bool, 20> subtree_life;
+  subtree_life.safe_splice(*life);
+
+  life = &subtree_life;
+
   FOR_EACH_VEC_ELT (SLP_TREE_SCALAR_STMTS (node), i, stmt)
     {
       unsigned stmt_cost;
