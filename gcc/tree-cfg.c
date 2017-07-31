@@ -6600,7 +6600,7 @@ replace_ssa_name (tree name, hash_map<tree, tree> *vars_map,
 
       /* Now that we've used the def stmt to define new_name, make sure it
 	 doesn't define name anymore.  */
-      SSA_NAME_DEF_STMT (name) = NULL;
+      SSA_NAME_DEF_STMT (name) = gimple_build_nop ();
 
       vars_map->put (name, new_name);
     }
