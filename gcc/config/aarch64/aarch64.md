@@ -298,7 +298,7 @@
 (define_insn "indirect_jump"
   [(set (pc) (match_operand:DI 0 "register_operand" "r"))]
   ""
-  "br\\t%0"
+  "* return aarch64_output_branch_register (operands[0]);"
   [(set_attr "type" "branch")]
 )
 
@@ -800,7 +800,7 @@
    (clobber (reg:DI LR_REGNUM))]
   ""
   "@
-  blr\\t%0
+  * return aarch64_output_branch_and_link_register (operands[0]);
   bl\\t%c0"
   [(set_attr "type" "call, call")]
 )
@@ -826,7 +826,7 @@
    (clobber (reg:DI LR_REGNUM))]
   ""
   "@
-  blr\\t%1
+  * return aarch64_output_branch_and_link_register (operands[1]);
   bl\\t%c1"
   [(set_attr "type" "call, call")]
 )
@@ -862,7 +862,7 @@
    (return)]
   "SIBLING_CALL_P (insn)"
   "@
-   br\\t%0
+   * return aarch64_output_branch_register (operands[0]);
    b\\t%c0"
   [(set_attr "type" "branch, branch")]
 )
@@ -875,7 +875,7 @@
    (return)]
   "SIBLING_CALL_P (insn)"
   "@
-   br\\t%1
+   * return aarch64_output_branch_register (operands[1]);
    b\\t%c1"
   [(set_attr "type" "branch, branch")]
 )
