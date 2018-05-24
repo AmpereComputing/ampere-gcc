@@ -19,8 +19,7 @@ male_indirect_jump (long offset)
 /* { dg-final { scan-assembler "bl\[ \t\]*\.LIND1" } } */
 /* { dg-final { scan-assembler "wfe" } } */
 /* { dg-final { scan-assembler "b\[ \t\]*\.LIND0" } } */
-/* { dg-final { scan-assembler "adrp\[ \t\]*x30, .LIND2" } } */
-/* { dg-final { scan-assembler "add\[ \t\]*x30, x30, :lo12:.LIND2" } } */
+/* { dg-final { scan-assembler "adr\[ \t\]*x30, .LIND2" } } */
 /* { dg-final { scan-assembler "ret" } } */
 /* { dg-final { scan-assembler "ldr\[ \t\]*x30, \\\[sp\\\], #16" } } */
 /* { dg-final { scan-assembler "blr\[ \t\]*x1" } } */

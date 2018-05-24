@@ -12724,7 +12724,6 @@ indirect_thunk_name (char name[32], int regno)
 	push	lr
 	bl	L2
 L1:	wfe
-	dsb	sy
 	b	L1
 L2:	mov	lr, &L3
 	ret
@@ -12765,10 +12764,7 @@ output_indirect_thunk (bool save_lr)
 
   /* L2: lr=&L3; ret */
   ASM_OUTPUT_INTERNAL_LABEL (asm_out_file, indirectlabel2);
-  fputs ("\tadrp\tx30, ", asm_out_file);
-  assemble_name_raw (asm_out_file, indirectlabel3);
-  fputc ('\n', asm_out_file);
-  fputs ("\tadd\tx30, x30, :lo12:", asm_out_file);
+  fputs ("\tadr\tx30, ", asm_out_file);
   assemble_name_raw (asm_out_file, indirectlabel3);
   fputc ('\n', asm_out_file);
   fputs ("\tret\n", asm_out_file);

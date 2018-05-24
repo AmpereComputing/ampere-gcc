@@ -21,5 +21,4 @@ male_indirect_jump (long offset)
 /* { dg-final { scan-assembler-not "bl\[ \t\]*\.LIND1" } } */
 /* { dg-final { scan-assembler-not "wfe" } } */
 /* { dg-final { scan-assembler-not "b\[ \t\]*\.LIND0" } } */
-/* { dg-final { scan-assembler-not "adrp\[ \t\]*x30, .LIND2" } } */
-/* { dg-final { scan-assembler-not "add\[ \t\]*x30, x30, :lo12:.LIND2" } } */
+/* { dg-final { scan-assembler-not "adr\[ \t\]*x30, .LIND2" } } */
