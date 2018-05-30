@@ -81,7 +81,7 @@ enum aarch64_function_type {
   AARCH64_FUNCTION_ALL
 };
 
-/* Values for -mindirect-branch option. */
+/* Values for -mindirect-branch option.  */
 enum indirect_branch {
   indirect_branch_unset = 0,
   indirect_branch_keep,

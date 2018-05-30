@@ -9155,9 +9155,9 @@ aarch64_set_current_function (tree fndecl)
   if (!fndecl || fndecl == aarch64_previous_fndecl)
     {
       if (fndecl != NULL_TREE)
-        {
-          aarch64_set_indirect_branch_type (fndecl);
-        }
+	{
+	  aarch64_set_indirect_branch_type (fndecl);
+	}
       return;
     }
 
@@ -9341,7 +9341,7 @@ aarch64_handle_fndecl_attribute (tree *node, tree name, tree args, int,
   if (TREE_CODE (*node) != FUNCTION_DECL)
     {
       warning (OPT_Wattributes, "%qE attribute only applies to functions",
-               name);
+	       name);
       *no_add_attrs = true;
     }
 
@@ -12716,7 +12716,7 @@ static void
 indirect_thunk_name (char name[32], int regno)
 {
   sprintf (name, "__aarch64_indirect_thunk_%s",
-           reg_names[regno]);
+	   reg_names[regno]);
 }
 
 /* Output a retpoline thunk for aarch64:
@@ -12780,7 +12780,7 @@ output_indirect_thunk (bool save_lr)
 }
 
 static void
-output_indirect_thunk_function(int regno)
+output_indirect_thunk_function (int regno)
 {
   char name[32];
   tree decl;
@@ -12819,8 +12819,8 @@ output_indirect_thunk_function(int regno)
   final_start_function (emit_barrier (), asm_out_file, 1);
 
   output_indirect_thunk (true);
-  rtx xop = gen_rtx_REG(word_mode, regno);
-  output_asm_insn("br\t%0", &xop);
+  rtx xop = gen_rtx_REG (word_mode, regno);
+  output_asm_insn ("br\t%0", &xop);
 
   final_end_function ();
   init_insn_lengths ();
@@ -12903,7 +12903,7 @@ aarch64_code_end (void)
   for (regno = R0_REGNUM; regno <= SP_REGNUM; regno++)
     {
       if (indirect_thunks_used & (1 << regno))
-        output_indirect_thunk_function(regno);
+	output_indirect_thunk_function (regno);
     }
 }
 
@@ -15899,12 +15899,13 @@ aarch64_sched_can_speculate_insn (rtx_insn *insn)
 }
 
 /* Table of valid machine attributes.  */
+
 static const struct attribute_spec aarch64_attribute_table[] =
 {
   { "indirect_branch", 1, 1, true, false, false,
     aarch64_handle_fndecl_attribute, false },
   /* End element.  */
-  { NULL,        0, 0, false, false, false, NULL, false }
+  { NULL, 0, 0, false, false, false, NULL, false }
 };
 
 /* Target-specific selftests.  */
