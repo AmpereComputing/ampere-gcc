@@ -1,6 +1,19 @@
 2020-03-20  Erick Ochoa <erick.ochoa@theobroma-systems.com>
 
 	Backport from mainline
+	2018-07-04  Martin Liska  <mliska@suse.cz>
+
+	PR middle-end/66240
+	PR target/45996
+	PR c/84100
+	* gcc.dg/pr84100.c (foo):
+	* gcc.target/i386/falign-functions-2.c: New test.
+	* gcc.target/i386/falign-functions.c: New test.
+
+
+2020-03-20  Erick Ochoa <erick.ochoa@theobroma-systems.com>
+
+	Backport from mainline
 	2018-12-07  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
 
 	* gcc.target/aarch64/sve/override_sve_width_1.c: New test.

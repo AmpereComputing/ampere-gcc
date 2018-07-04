@@ -1,3 +1,14 @@
+2020-03-20 Erick Ochoa <erick.ochoa@theobroma-systems.com>
+	
+	Backport from mainline
+	2018-07-04  Martin Liska  <mliska@suse.cz>
+
+	PR middle-end/66240
+	PR target/45996
+	PR c/84100
+	* lto.c (compare_tree_sccs_1): Use cl_optimization_option_eq
+	instead of memcmp.
+
 2020-03-04  Release Manager
 
 	* GCC 8.4.0 released.
