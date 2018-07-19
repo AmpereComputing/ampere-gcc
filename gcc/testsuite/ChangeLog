@@ -1,3 +1,11 @@
+2020-03-20  Erick Ochoa <erick.ochoa@theobroma-systems.com>
+
+	Backport from mainline
+	2018-07-19  Andre Vieira  <andre.simoesdiasvieira@arm.com>
+
+	PR target/83009
+	* gcc/target/aarch64/store_v2vec_lanes.c: Add extra tests.
+
 2020-03-04  Release Manager
 
 	* GCC 8.4.0 released.
