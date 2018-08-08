@@ -1588,6 +1588,7 @@ OBJS = \
 	tree.o \
 	typed-splay-tree.o \
 	unique-ptr-tests.o \
+	uncse.o \
 	valtrack.o \
 	value-prof.o \
 	var-tracking.o \
