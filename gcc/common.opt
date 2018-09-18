@@ -2719,6 +2719,11 @@ fvectorize-more
 Common Report Var(flag_vectorize_more) Optimization
 Vectorize a bit more.
 
+fnoloopalias=
+Common Report Joined Var(noloopalias) Init(0)
+Restrict pointer aliasing for given function's loops
+(allows more aggressive optimisations).
+
 funwind-tables
 Common Report Var(flag_unwind_tables) Optimization
 Just generate unwind tables for exception handling.
