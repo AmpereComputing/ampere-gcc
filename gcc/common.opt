@@ -2711,6 +2711,10 @@ fsplit-loops
 Common Report Var(flag_split_loops) Optimization
 Perform loop splitting.
 
+funroll-more
+Common Report Var(flag_unroll_more) Optimization
+Unroll a bit more.
+
 funwind-tables
 Common Report Var(flag_unwind_tables) Optimization
 Just generate unwind tables for exception handling.
