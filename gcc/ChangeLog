@@ -3,6 +3,15 @@
 	Backport from mainline
 	2018-12-07  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
 
+	* config/aarch64/aarch64.c (aarch64_tuning_override_functions): Add
+	sve_width entry.
+	(aarch64_parse_sve_width_string): Define.
+
+2020-03-20  Erick Ochoa <erick.ochoa@theobroma-systems.com>
+
+	Backport from mainline
+	2018-12-07  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
+
 	* config/aarch64/aarch64-opts.h (aarch64_sve_vector_bits_enum):
 	Add SVE_NOT_IMPLEMENTED value.
 	* config/aarch64/aarch64-protos.h (struct tune_params): Add sve_width
