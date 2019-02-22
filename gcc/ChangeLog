@@ -1,6 +1,18 @@
 2020-03-20  Erick Ochoa <erick.ochoa@theobroma-systems.com>
 
 	Backport from mainline
+	2019-02-22  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
+
+	* config/aarch64/aarch64.c (ares_tunings): Rename to...
+	(neoversen1_tunings): ... This.
+	* config/aarch64/aarch64-cores.def (ares): Change tuning to the above.
+	(neoverse-n1): New CPU.
+	* config/aarch64/aarch64-tune.md: Regenerate.
+	* doc/invoke.txt (AArch64 Options): Document neoverse-n1.
+
+2020-03-20  Erick Ochoa <erick.ochoa@theobroma-systems.com>
+
+	Backport from mainline
 	2019-01-17  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
 
 	* config/aarch64/aarch64.c (ares_tunings): Define.
