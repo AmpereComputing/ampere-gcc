@@ -32,7 +32,9 @@ along with GCC; see the file COPYING3.  If not see
 #include "tree-ssa-loop.h"
 #include "tree-ssa-loop-manip.h"
 #include "tree-into-ssa.h"
+#include "tree-inline.h"
 #include "cfgloop.h"
+#include "params.h"
 #include "tree-scalar-evolution.h"
 #include "gimple-iterator.h"
 #include "gimple-pretty-print.h"
@@ -40,7 +42,9 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple-fold.h"
 #include "gimplify-me.h"
 
-/* This file implements loop splitting, i.e. transformation of loops like
+/* This file implements two kind of loop splitting.
+
+   One transformation of loops like:
 
    for (i = 0; i < 100; i++)
      {
@@ -670,6 +674,801 @@ tree_ssa_split_loops (void)
   return 0;
 }
 
+/* Another transformation of loops like:
+
+   for (i = INIT (); CHECK (i); i = NEXT ())
+     {
+       if (expr (a_1, a_2, ..., a_n))
+         a_j = ...;  // change at least one a_j
+       else
+         S;          // not change any a_j
+     }
+
+   into:
+
+   for (i = INIT (); CHECK (i); i = NEXT ())
+     {
+       if (expr (a_1, a_2, ..., a_n))
+         a_j = ...;
+       else
+         {
+           S;
+           i = NEXT ();
+           break;
+         }
+     }
+
+   for (; CHECK (i); i = NEXT ())
+     {
+       S;
+     }
+
+   */
+
+/* Data structure to hold temporary information during loop split upon
+   semi-invariant conditional statement. */
+class split_info {
+public:
+  /* Array of all basic blocks in a loop, returned by get_loop_body(). */
+  basic_block *bbs;
+
+  /* All memory store/clobber statements in a loop. */
+  auto_vec<gimple *> stores;
+
+  /* Whether above memory stores vector has been filled. */
+  bool set_stores;
+
+  /* Semi-invariant conditional statement, upon which to split loop. */
+  gcond *cond;
+
+  split_info () : bbs (NULL),  set_stores (false), cond (NULL) { }
+
+  ~split_info ()
+    {
+      if (bbs)
+        free (bbs);
+    }
+};
+
+/* Find all statements with memory-write effect in a loop, including memory
+   store and non-pure function call, and keep those in a vector. This work
+   is only done for one time, for the vector should be constant during
+   analysis stage of semi-invariant condition. */
+
+static void
+find_vdef_in_loop (struct loop *loop)
+{
+  split_info *info = (split_info *) loop->aux;
+  gphi *vphi = get_virtual_phi (loop->header);
+
+  /* Indicate memory store vector has been filled. */
+  info->set_stores = true;
+
+  /* If loop contains memory operation, there must be a virtual PHI node in
+     loop header basic block. */
+  if (vphi == NULL)
+    return;
+
+  /* All virtual SSA names inside the loop are connected to be a cyclic
+     graph via virtual PHI nodes. The virtual PHI node in loop header just
+     links the first and the last virtual SSA names, by using the last as
+     PHI operand to define the first. */
+  const edge latch = loop_latch_edge (loop);
+  const tree first = gimple_phi_result (vphi);
+  const tree last = PHI_ARG_DEF_FROM_EDGE (vphi, latch);
+
+  /* The virtual SSA cyclic graph might consist of only one SSA name, who
+     is defined by itself.
+
+        .MEM_1 = PHI <.MEM_2(loop entry edge), .MEM_1(latch edge)>
+
+     This means the loop contains only memory loads, so we can skip it. */
+  if (first == last)
+    return;
+
+  auto_vec<gimple *> others;
+  auto_vec<tree> worklist;
+  auto_bitmap visited;
+
+  bitmap_set_bit (visited, SSA_NAME_VERSION (first));
+  bitmap_set_bit (visited, SSA_NAME_VERSION (last));
+  worklist.safe_push (last);
+
+  do
+    {
+      tree vuse = worklist.pop ();
+      gimple *stmt = SSA_NAME_DEF_STMT (vuse);
+
+      /* We mark the first and last SSA names as visited at the beginning,
+         and reversely start the process from the last SSA name toward the
+         first, which ensure that this do-while will not touch SSA names
+         defined outside of the loop. */
+      gcc_assert (gimple_bb (stmt)
+                  && flow_bb_inside_loop_p (loop, gimple_bb (stmt)));
+
+      if (gimple_code (stmt) == GIMPLE_PHI)
+        {
+          gphi *phi = as_a <gphi *> (stmt);
+
+          for (unsigned i = 0; i < gimple_phi_num_args (phi); ++i)
+            {
+              tree arg = gimple_phi_arg_def (stmt, i);
+
+              if (bitmap_set_bit (visited, SSA_NAME_VERSION (arg)))
+                worklist.safe_push (arg);
+            }
+        }
+      else
+        {
+          tree prev = gimple_vuse (stmt);
+
+          /* Non-pure call statement is conservatively assumed to impact
+             all memory locations. So place call statements ahead of other
+             memory stores in the vector with the idea of of using them as
+             shortcut terminators to memory alias analysis, kind of
+             optimization for compilation. */
+          if (gimple_code (stmt) == GIMPLE_CALL)
+            info->stores.safe_push (stmt);
+          else
+            others.safe_push (stmt);
+
+          if (bitmap_set_bit (visited, SSA_NAME_VERSION (prev)))
+            worklist.safe_push (prev);
+        }
+    } while (!worklist.is_empty ());
+
+    info->stores.safe_splice (others);
+}
+
+
+/* Given a memory load or pure call statement, check whether it is impacted
+   by some memory store in the loop excluding those basic blocks dominated
+   by SKIP_HEAD (those basic blocks always corresponds to one branch of
+   a conditional statement). If SKIP_HEAD is NULL, all basic blocks of the
+   loop are checked. */
+
+static bool
+vuse_semi_invariant_p (struct loop *loop, gimple *stmt,
+                       const_basic_block skip_head)
+{
+  split_info *info = (split_info *) loop->aux;
+
+  /* Collect memory store/clobber statements if have not do that. */
+  if (!info->set_stores)
+    find_vdef_in_loop (loop);
+
+  tree rhs = is_gimple_assign (stmt) ? gimple_assign_rhs1 (stmt) : NULL_TREE;
+  ao_ref ref;
+  gimple *store;
+  unsigned i;
+
+  ao_ref_init (&ref, rhs);
+
+  FOR_EACH_VEC_ELT (info->stores, i, store)
+    {
+      /* Skip those basic blocks dominated by SKIP_HEAD. */
+      if (skip_head
+          && dominated_by_p (CDI_DOMINATORS, gimple_bb (store), skip_head))
+        continue;
+
+      /* For a pure call, it is assumed to be impacted by any memory store.
+         For a memory load, use memory alias analysis to check that. */
+      if (!ref.ref || stmt_may_clobber_ref_p_1 (store, &ref))
+        return false;
+    }
+
+  return true;
+}
+
+/* Forward declaration */
+
+static bool
+stmt_semi_invariant_p (struct loop *loop, gimple *stmt,
+                       const_basic_block skip_head);
+
+/* Suppose one condition branch, led by SKIP_HEAD, is not executed in certain
+   iteration, check whether an SSA name remains unchanged in next interation.
+   We can call this characterisic as semi-invariantness. SKIP_HEAD might be
+   NULL, if so, nothing excluded, all basic blocks and control flows in the
+   loop will be considered. */
+
+static bool
+ssa_semi_invariant_p (struct loop *loop, const tree name,
+                      const_basic_block skip_head)
+{
+  gimple *def = SSA_NAME_DEF_STMT (name);
+  const_basic_block def_bb = gimple_bb (def);
+
+  /* An SSA name defined outside a loop is definitely semi-invariant. */
+  if (!def_bb || !flow_bb_inside_loop_p (loop, def_bb))
+    return true;
+
+  /* This function is used to check semi-invariantness of a condition
+     statement, and SKIP_HEAD is always given as head of one of its
+     branches. So it implies that SSA name to check should be defined
+     before the conditional statement, and also before SKIP_HEAD. */
+
+  if (gimple_code (def) == GIMPLE_PHI)
+    {
+      /* In a normal loop, if a PHI node is located not in loop header, all
+         its source operands should be defined inside the loop. As we
+         mentioned before, these source definitions are ahead of SKIP_HEAD,
+         and will not be bypassed. Therefore, in each iteration, any of
+         these sources might be value provider to the SSA name, which for
+         sure should not be seen as invariant. */
+      if (def_bb != loop->header || !skip_head)
+        return false;
+
+      const_edge latch = loop_latch_edge (loop);
+      tree from = PHI_ARG_DEF_FROM_EDGE (as_a <gphi *> (def), latch);
+
+      /* A PHI node in loop header always contains two source operands,
+         one is initial value, the other is the copy of last iteration
+         through loop latch, we call it latch value. From this PHI node
+         to definition of latch value, if excluding those basic blocks
+         dominated by SKIP_HEAD, there is no definition of other version
+         of same variable, SSA name defined by the PHI node is
+         semi-invariant.
+
+                         loop entry
+                              |     .--- latch ---.
+                              |     |             |
+                              v     v             |
+                  x_1 = PHI <x_0,  x_3>           |
+                           |                      |
+                           v                      |
+              .------- if (cond) -------.         |
+              |                         |         |
+              |                     [ SKIP ]      |
+              |                         |         |
+              |                     x_2 = ...     |
+              |                         |         |
+              '---- T ---->.<---- F ----'         |
+                           |                      |
+                           v                      |
+                  x_3 = PHI <x_1, x_2>            |
+                           |                      |
+                           '----------------------'
+
+        Suppose in certain iteration, execution flow in above graph goes
+        through true branch, which means that one source value to define
+        x_3 in false branch (x2) is skipped, x_3 only comes from x_1, and
+        x_1 in next iterations is defined by x_3, we know that x_1 will
+        never changed if COND always chooses true branch from then on. */
+
+      while (from != name)
+        {
+          /* A new value comes from a CONSTANT. */
+          if (TREE_CODE (from) != SSA_NAME)
+            return false;
+
+          gimple *stmt = SSA_NAME_DEF_STMT (from);
+          const_basic_block bb = gimple_bb (stmt);
+
+          /* A new value comes from outside of loop. */
+          if (!bb || !flow_bb_inside_loop_p (loop, bb))
+            return false;
+
+          from = NULL_TREE;
+
+          if (gimple_code (stmt) == GIMPLE_PHI)
+            {
+              gphi *phi = as_a <gphi *> (stmt);
+
+              for (unsigned i = 0; i < gimple_phi_num_args (phi); ++i)
+                {
+                  const_edge e = gimple_phi_arg_edge (phi, i);
+
+                  /* Skip redefinition from basic blocks being excluded. */
+                  if (!dominated_by_p (CDI_DOMINATORS, e->src, skip_head))
+                    {
+                      /* There are more than one source operands that can
+                         provide value to the SSA name. */
+                      if (from)
+                        return false;
+
+                      from = gimple_phi_arg_def (phi, i);
+                    }
+                }
+            }
+          else if (gimple_code (stmt) == GIMPLE_ASSIGN)
+            {
+              /* For simple value copy, check its rhs instead. */
+              if (gimple_assign_ssa_name_copy_p (stmt))
+                from = gimple_assign_rhs1 (stmt);
+            }
+
+          /* Any other kind of definition is deemed to introduce a new value
+             to the SSA name. */
+          if (!from)
+            return false;
+        }
+        return true;
+    }
+
+  /* Value originated from volatile memory load or return of normal (non-
+     const/pure) call should not be treated as constant in each iteration.  */
+  if (gimple_has_side_effects (def))
+    return false;
+
+  /* Check if any memory store may kill memory load at this place. */
+  if (gimple_vuse (def) && !vuse_semi_invariant_p (loop, def, skip_head))
+    return false;
+
+  /* Check operands of definition statement of the SSA name. */
+  return stmt_semi_invariant_p (loop, def, skip_head);
+}
+
+/* Check whether a statement is semi-invariant, iff all its operands are
+   semi-invariant. */
+
+static bool
+stmt_semi_invariant_p (struct loop *loop, gimple *stmt,
+                       const_basic_block skip_head)
+{
+  ssa_op_iter iter;
+  tree use;
+
+  /* Although operand of a statement might be SSA name, CONSTANT or VARDECL,
+     here we only need to check SSA name operands. For VARDECL operand
+     involves memory load, check on VARDECL operand must have been done
+     prior to invocation of this function in ssa_semi_invariant_p. */
+  FOR_EACH_SSA_TREE_OPERAND (use, stmt, iter, SSA_OP_USE)
+    {
+      if (!ssa_semi_invariant_p (loop, use, skip_head))
+        return false;
+    }
+
+  return true;
+}
+
+/* Determine if unselect one branch of a conditional statement, whether we
+   can exclude leading basic block of the branch and those basic blocks
+   dominated by the leading one. */
+
+static bool
+can_branch_be_excluded (basic_block branch_bb)
+{
+  if (single_pred_p (branch_bb))
+    return true;
+
+  edge e;
+  edge_iterator ei;
+
+  FOR_EACH_EDGE (e, ei, branch_bb->preds)
+    {
+      if (dominated_by_p (CDI_DOMINATORS, e->src, branch_bb))
+        continue;
+
+      if (dominated_by_p (CDI_DOMINATORS, branch_bb, e->src))
+        continue;
+
+       /* The branch can be reached through other path, not just from the
+          conditional statement. */
+      return false;
+    }
+
+  return true;
+}
+
+/* Find out which branch of a conditional statement is invariant. That
+   is: once the branch is selected in certain loop iteration, any operand
+   that contributes to computation of the conditional statement remains
+   unchanged in all following iterations. */
+
+static int
+get_cond_invariant_branch (struct loop *loop, gcond *cond)
+{
+  basic_block cond_bb = gimple_bb (cond);
+  basic_block targ_bb[2];
+  bool invar[2];
+  unsigned invar_checks;
+
+  for (unsigned i = 0; i < 2; i++)
+    {
+      targ_bb[i] = EDGE_SUCC (cond_bb, i)->dest;
+
+      /* One branch directs to loop exit, no need to perform loop split upon
+         this conditional statement. Firstly, it is trivial if the exit
+         branch is semi-invariant, for the statement is just loop-breaking.
+         Secondly, if the opposite branch is semi-invariant, it means that
+         the statement is real loop-invariant, which is covered by loop
+         unswitch. */
+      if (!flow_bb_inside_loop_p (loop, targ_bb[i]))
+        return -1;
+    }
+
+  invar_checks = 0;
+
+  for (unsigned i = 0; i < 2; i++)
+    {
+      invar[!i] = false;
+
+      if (!can_branch_be_excluded (targ_bb[i]))
+        continue;
+
+      /* Given a semi-invariant branch, if its opposite branch dominates
+         loop latch, it and its following trace will only be executed in
+         final iteration of loop, namely it is not part of repeated body
+         of the loop. Similar to the above case that the branch is loop
+         exit, no need to split loop. */
+      if (dominated_by_p (CDI_DOMINATORS, loop->latch, targ_bb[i]))
+        continue;
+
+      invar[!i] = stmt_semi_invariant_p (loop, cond, targ_bb[i]);
+      invar_checks++;
+    }
+
+  /* With both branches being invariant (handled by loop unswitch) or
+     variant is not what we want. */
+  if (invar[0] ^ !invar[1])
+    return -1;
+
+  /* Found a real loop-invariant condition, do nothing. */
+  if (invar_checks < 2 && stmt_semi_invariant_p (loop, cond, NULL))
+    return -1;
+
+  return invar[1];
+}
+
+/* Return TRUE is conditional statement in a normal loop is also inside
+   a nested non-recognized loop, such as an irreducible loop. */
+
+static bool
+is_cond_in_hidden_loop (const struct loop *loop, basic_block cond_bb,
+                        int branch)
+{
+  basic_block branch_bb = EDGE_SUCC (cond_bb, branch)->dest;
+
+  if (cond_bb == loop->header || branch_bb == loop->latch)
+    return false;
+
+  basic_block *bbs = ((split_info *) loop->aux)->bbs;
+  auto_vec<basic_block> worklist;
+
+  for (unsigned i = 0; i < loop->num_nodes; i++)
+    bbs[i]->flags &= ~BB_REACHABLE;
+
+  /* Mark latch basic block as visited to be end point for reachablility
+     traversal. */
+  loop->latch->flags |= BB_REACHABLE;
+
+  gcc_assert (flow_bb_inside_loop_p (loop, branch_bb));
+
+  /* Start from specified branch, the opposite branch is ignored for it
+     will not be executed. */
+  branch_bb->flags |= BB_REACHABLE;
+  worklist.safe_push (branch_bb);
+
+  do
+    {
+      basic_block bb = worklist.pop ();
+      edge e;
+      edge_iterator ei;
+
+      FOR_EACH_EDGE (e, ei, bb->succs)
+        {
+          basic_block succ_bb = e->dest;
+
+          if (succ_bb == cond_bb)
+            return true;
+
+          if (!flow_bb_inside_loop_p (loop, succ_bb))
+            continue;
+
+          if (succ_bb->flags & BB_REACHABLE)
+            continue;
+
+          succ_bb->flags |= BB_REACHABLE;
+          worklist.safe_push (succ_bb);
+        }
+    } while (!worklist.is_empty ());
+
+  return false;
+}
+
+
+/* Calculate increased code size measured by estimated insn number if
+   applying loop split upon certain branch of a conditional statement. */
+
+static int
+compute_added_num_insns (struct loop *loop, const_basic_block cond_bb,
+                         int branch)
+{
+  const_basic_block targ_bb_var = EDGE_SUCC (cond_bb, !branch)->dest;
+  basic_block *bbs = ((split_info *) loop->aux)->bbs;
+  int num = 0;
+
+  for (unsigned i = 0; i < loop->num_nodes; i++)
+    {
+      /* Do no count basic blocks only in opposite branch. */
+      if (dominated_by_p (CDI_DOMINATORS, bbs[i], targ_bb_var))
+        continue;
+
+      for (gimple_stmt_iterator gsi = gsi_start_bb (bbs[i]); !gsi_end_p (gsi);
+           gsi_next (&gsi))
+        num += estimate_num_insns (gsi_stmt (gsi), &eni_size_weights);
+    }
+
+  return num;
+}
+
+/* Return true if it is eligible and profitable to perform loop split upon
+   a conditional statement. */
+
+static bool
+can_split_loop_on_cond (struct loop *loop, gcond *cond)
+{
+  int branch = get_cond_invariant_branch (loop, cond);
+
+  if (branch < 0)
+    return false;
+
+  basic_block cond_bb = gimple_bb (cond);
+
+  /* Add a threshold for increased code size to disable loop split. */
+  if (compute_added_num_insns (loop, cond_bb, branch) >
+      PARAM_VALUE (PARAM_MAX_COND_LOOP_SPLIT_INSNS))
+    return false;
+
+  /* In each interation, conditional statement candidate should be
+     executed only once. */
+  if (is_cond_in_hidden_loop (loop, cond_bb, branch))
+    return false;
+
+  profile_probability prob = EDGE_SUCC (cond_bb, branch)->probability;
+
+  /* When accurate profile information is available, and execution
+     frequency of the branch is too low, just let it go. */
+  if (prob.reliable_p ())
+    {
+      int thres = PARAM_VALUE (PARAM_MIN_COND_LOOP_SPLIT_PROB);
+
+      if (prob < profile_probability::always ().apply_scale (thres, 100))
+        return false;
+    }
+
+  /* Temporarily keep branch index in conditional statement. */
+  gimple_set_plf (cond, GF_PLF_1, branch);
+  return true;
+}
+
+/* Traverse all conditional statements in a loop, to find out a good
+   candidate upon which we can do loop split. */
+
+static bool
+mark_cond_to_split_loop (struct loop *loop)
+{
+  split_info *info = new split_info ();
+  basic_block *bbs = info->bbs = get_loop_body (loop);
+
+  /* Allocate an area to keep temporary info, and associate its address
+     with loop aux field. */
+  loop->aux = info;
+
+  for (unsigned i = 0; i < loop->num_nodes; i++)
+    {
+      basic_block bb = bbs[i];
+
+      /* Skip statement in inner recognized loop, because we want that
+         conditional statement executes at most once in each iteration. */
+      if (bb->loop_father != loop)
+        continue;
+
+      /* Actually this check is not a must constraint. With it, we can
+         ensure conditional statement will execute at least once in
+         each iteration. */
+      if (!dominated_by_p (CDI_DOMINATORS, loop->latch, bb))
+        continue;
+
+      gimple *last = last_stmt (bb);
+
+      if (!last || gimple_code (last) != GIMPLE_COND)
+        continue;
+
+      gcond *cond = as_a <gcond *> (last);
+
+      if (can_split_loop_on_cond (loop, cond))
+        {
+          info->cond = cond;
+          return true;
+        }
+    }
+
+  delete info;
+  loop->aux = NULL;
+
+  return false;
+}
+
+/* Given a loop with a chosen conditional statement candidate, perform loop
+   split transformation illustrated as the following graph.
+
+               .-------T------ if (true) ------F------.
+               |                    .---------------. |
+               |                    |               | |
+               v                    |               v v
+          pre-header                |            pre-header
+               | .------------.     |                 | .------------.
+               | |            |     |                 | |            |
+               | v            |     |                 | v            |
+             header           |     |               header           |
+               |              |     |                 |              |
+       [ bool r = cond; ]     |     |                 |              |
+               |              |     |                 |              |
+      .---- if (r) -----.     |     |        .--- if (true) ---.     |
+      |                 |     |     |        |                 |     |
+  invariant             |     |     |    invariant             |     |
+      |                 |     |     |        |                 |     |
+      '---T--->.<---F---'     |     |        '---T--->.<---F---'     |
+               |              |    /                  |              |
+             stmts            |   /                 stmts            |
+               |              |  /                    |              |
+              / \             | /                    / \             |
+     .-------*   *       [ if (!r) ]        .-------*   *            |
+     |           |            |             |           |            |
+     |         latch          |             |         latch          |
+     |           |            |             |           |            |
+     |           '------------'             |           '------------'
+     '------------------------. .-----------'
+             loop1            | |                   loop2
+                              v v
+                             exits
+
+   In the graph, loop1 represents the part derived from original one, and
+   loop2 is duplicated using loop_version (), which corresponds to the part
+   of original one being splitted out. In loop1, a new bool temporary (r)
+   is introduced to keep value of the condition result. In original latch
+   edge of loop1, we insert a new conditional statement whose value comes
+   from previous temporary (r), one of its branch goes back to loop1 header
+   as a latch edge, and the other branch goes to loop2 pre-header as an
+   entry edge. And also in loop2, we abandon the variant branch of the
+   conditional statement candidate by setting a constant bool condition,
+   based on which branch is semi-invariant. */
+
+static bool
+split_loop_for_cond (struct loop *loop1)
+{
+  split_info *info = (split_info *) loop1->aux;
+  gcond *cond = info->cond;
+  basic_block cond_bb = gimple_bb (cond);
+  int branch = gimple_plf (cond, GF_PLF_1);
+  bool true_invar = !!(EDGE_SUCC (cond_bb, branch)->flags & EDGE_TRUE_VALUE);
+
+  if (dump_file && (dump_flags & TDF_DETAILS))
+   {
+     fprintf (dump_file, "In %s(), split loop %d at branch<%s>, BB %d\n",
+              current_function_name (), loop1->num,
+              true_invar ? "T" : "F", cond_bb->index);
+     print_gimple_stmt (dump_file, cond, 0, TDF_SLIM | TDF_VOPS);
+   }
+
+  initialize_original_copy_tables ();
+
+  struct loop *loop2 = loop_version (loop1, boolean_true_node, NULL,
+                                     profile_probability::always (),
+                                     profile_probability::never (),
+                                     profile_probability::always (),
+                                     profile_probability::always (),
+                                     true);
+  if (!loop2)
+    {
+      free_original_copy_tables ();
+      return false;
+    }
+
+  /* Generate a bool type temporary to hold result of the condition. */
+  tree tmp = make_ssa_name (boolean_type_node);
+  gimple_stmt_iterator gsi = gsi_last_bb (cond_bb);
+  gimple *stmt = gimple_build_assign (tmp,
+                                      gimple_cond_code (cond),
+                                      gimple_cond_lhs (cond),
+                                      gimple_cond_rhs (cond));
+
+  gsi_insert_before (&gsi, stmt, GSI_NEW_STMT);
+  gimple_cond_set_condition (cond, EQ_EXPR, tmp, boolean_true_node);
+  update_stmt (cond);
+
+  /* Replace the condition in loop2 with a bool constant to let pass
+     manager remove the variant branch after current pass finishes. */
+  basic_block cond_bb_copy = get_bb_copy (cond_bb);
+  gcond *cond_copy = as_a<gcond *> (last_stmt (cond_bb_copy));
+
+  if (true_invar)
+    gimple_cond_make_true (cond_copy);
+  else
+    gimple_cond_make_false (cond_copy);
+
+  update_stmt (cond_copy);
+
+  /* Insert a new conditional statement on latch edge of loop1. This
+     statement acts as a switch to transfer execution from loop1 to
+     loop2, when loop1 enters into invariant state. */
+  basic_block latch_bb = split_edge (loop_latch_edge (loop1));
+  basic_block break_bb = split_edge (single_pred_edge (latch_bb));
+  gimple *break_cond = gimple_build_cond (EQ_EXPR, tmp, boolean_true_node,
+                                          NULL_TREE, NULL_TREE);
+
+  gsi = gsi_last_bb (break_bb);
+  gsi_insert_after (&gsi, break_cond, GSI_NEW_STMT);
+
+  edge to_loop1 = single_succ_edge (break_bb);
+  edge to_loop2 = make_edge (break_bb, loop_preheader_edge (loop2)->src, 0);
+
+  to_loop1->flags &= ~EDGE_FALLTHRU;
+
+  if (true_invar)
+    {
+      to_loop1->flags |= EDGE_FALSE_VALUE;
+      to_loop2->flags |= EDGE_TRUE_VALUE;
+    }
+  else
+    {
+      to_loop1->flags |= EDGE_TRUE_VALUE;
+      to_loop2->flags |= EDGE_FALSE_VALUE;
+    }
+
+  update_ssa (TODO_update_ssa);
+
+  /* Due to introduction of a control flow edge from loop1 latch to loop2
+     pre-header, we should update PHIs in loop2 to reflect this connection
+     between loop1 and loop2. */
+  connect_loop_phis (loop1, loop2, to_loop2);
+
+  free_original_copy_tables ();
+
+  rewrite_into_loop_closed_ssa_1 (NULL, 0, SSA_OP_USE, loop1);
+
+  return true;
+}
+
+/* Main entry point to perform loop splitting for suitable if-conditions
+   in all loops. */
+
+static unsigned int
+tree_ssa_split_loops_for_cond (void)
+{
+  struct loop *loop;
+  auto_vec<struct loop *> loop_list;
+  bool changed = false;
+  unsigned i;
+
+  FOR_EACH_LOOP (loop, LI_INCLUDE_ROOT)
+    loop->aux = NULL;
+
+  /* Go through all loops starting from innermost. */
+  FOR_EACH_LOOP (loop, LI_FROM_INNERMOST)
+    {
+      /* Put loop in a list if found a conditional statement candidate in
+         the loop. This is stage for analysis, no change anything in the
+         function. */
+      if (!loop->aux
+          && !optimize_loop_for_size_p (loop)
+          && mark_cond_to_split_loop (loop))
+        loop_list.safe_push (loop);
+
+      /* If any of our inner loops was split, don't split us,
+         and mark our containing loop as having had splits as well. */
+      loop_outer (loop)->aux = loop->aux;
+    }
+
+  FOR_EACH_VEC_ELT (loop_list, i, loop)
+    {
+      /* Extract selected loop and perform loop split. This is stage for
+         transformation. */
+      changed |= split_loop_for_cond (loop);
+
+      delete (split_info *) loop->aux;
+    }
+
+  FOR_EACH_LOOP (loop, LI_INCLUDE_ROOT)
+    loop->aux = NULL;
+
+  if (changed)
+    return TODO_cleanup_cfg;
+  return 0;
+}
+
 /* Loop splitting pass.  */
 
 namespace {
@@ -716,3 +1515,49 @@ make_pass_loop_split (gcc::context *ctxt)
 {
   return new pass_loop_split (ctxt);
 }
+
+namespace {
+
+const pass_data pass_data_cond_loop_split =
+{
+  GIMPLE_PASS, /* type */
+  "cond_lsplit", /* name */
+  OPTGROUP_LOOP, /* optinfo_flags */
+  TV_COND_LOOP_SPLIT, /* tv_id */
+  PROP_cfg, /* properties_required */
+  0, /* properties_provided */
+  0, /* properties_destroyed */
+  0, /* todo_flags_start */
+  0, /* todo_flags_finish */
+};
+
+class pass_cond_loop_split : public gimple_opt_pass
+{
+public:
+  pass_cond_loop_split (gcc::context *ctxt)
+    : gimple_opt_pass (pass_data_cond_loop_split, ctxt)
+  {}
+
+  /* opt_pass methods: */
+  virtual bool gate (function *) { return flag_split_loops != 0; }
+  virtual unsigned int execute (function *);
+
+}; // class pass_cond_loop_split
+
+unsigned int
+pass_cond_loop_split::execute (function *fun)
+{
+  if (number_of_loops (fun) <= 1)
+    return 0;
+
+  return tree_ssa_split_loops_for_cond ();
+}
+
+} // anon namespace
+
+gimple_opt_pass *
+make_pass_cond_loop_split (gcc::context *ctxt)
+{
+  return new pass_cond_loop_split (ctxt);
+}
+
