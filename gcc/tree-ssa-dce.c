@@ -356,6 +356,26 @@ mark_control_dependent_edges_necessary (basic_block bb, bool ignore_self)
     bitmap_set_bit (visited_control_parents, bb->index);
 }
 
+/* Check whether a loop has any non-EH exit. */
+
+static bool
+loop_has_true_exits (const struct loop *loop)
+{
+  vec<edge> exits = get_loop_exit_edges (loop);
+  bool found = false;
+  edge e;
+  unsigned i;
+
+  FOR_EACH_VEC_ELT (exits, i, e)
+    if (!(e->flags & EDGE_EH))
+      {
+        found = true;
+        break;
+      }
+
+  exits.release ();
+  return found;
+}
 
 /* Find obviously necessary statements.  These are things like most function
    calls, and stores to file level variables.
@@ -365,7 +385,7 @@ mark_control_dependent_edges_necessary (basic_block bb, bool ignore_self)
    dependence analysis.  */
 
 static void
-find_obviously_necessary_stmts (bool aggressive)
+find_obviously_necessary_stmts (bool aggressive, bool aggressive_loop_removal)
 {
   basic_block bb;
   gimple_stmt_iterator gsi;
@@ -417,7 +437,8 @@ find_obviously_necessary_stmts (bool aggressive)
 	  }
 
       FOR_EACH_LOOP (loop, 0)
-	if (!finite_loop_p (loop))
+	if (!finite_loop_p (loop)
+	    && (!aggressive_loop_removal || !loop_has_true_exits (loop)))
 	  {
 	    if (dump_file)
 	      fprintf (dump_file, "cannot prove finiteness of loop %i\n", loop->num);
@@ -1532,6 +1553,8 @@ tree_dce_done (bool aggressive)
 /* Main routine to eliminate dead code.
 
    AGGRESSIVE controls the aggressiveness of the algorithm.
+   If aggressive mode is on, AGGRESSIVE_LOOP_REMOVAL enables more aggressive
+   removal of empty loop whose finiteness can not be statically determined.
    In conservative mode, we ignore control dependence and simply declare
    all but the most trivially dead branches necessary.  This mode is fast.
    In aggressive mode, control dependences are taken into account, which
@@ -1544,7 +1567,7 @@ tree_dce_done (bool aggressive)
 	  start experimenting with pass ordering.  */
 
 static unsigned int
-perform_tree_ssa_dce (bool aggressive)
+perform_tree_ssa_dce (bool aggressive, bool aggressive_loop_removal = false)
 {
   bool something_changed = 0;
 
@@ -1576,7 +1599,7 @@ perform_tree_ssa_dce (bool aggressive)
       mark_dfs_back_edges ();
     }
 
-  find_obviously_necessary_stmts (aggressive);
+  find_obviously_necessary_stmts (aggressive, aggressive_loop_removal);
 
   if (aggressive && ! in_loop_pipeline)
     {
@@ -1631,9 +1654,10 @@ tree_ssa_dce (void)
 }
 
 static unsigned int
-tree_ssa_cd_dce (void)
+tree_ssa_cd_dce (bool aggressive_loop_removal)
 {
-  return perform_tree_ssa_dce (/*aggressive=*/optimize >= 2);
+  return perform_tree_ssa_dce (/*aggressive=*/optimize >= 2,
+		  	       aggressive_loop_removal && flag_finite_loop);
 }
 
 namespace {
@@ -1690,15 +1714,20 @@ const pass_data pass_data_cd_dce =
 
 class pass_cd_dce : public gimple_opt_pass
 {
+  bool aggressive_loop_removal;
 public:
-  pass_cd_dce (gcc::context *ctxt)
+  pass_cd_dce (gcc::context *ctxt, bool alr = false)
     : gimple_opt_pass (pass_data_cd_dce, ctxt)
+    , aggressive_loop_removal (alr)
   {}
 
   /* opt_pass methods: */
   opt_pass * clone () { return new pass_cd_dce (m_ctxt); }
   virtual bool gate (function *) { return flag_tree_dce != 0; }
-  virtual unsigned int execute (function *) { return tree_ssa_cd_dce (); }
+  virtual unsigned int execute (function *)
+  {
+    return tree_ssa_cd_dce (aggressive_loop_removal);
+  }
 
 }; // class pass_cd_dce
 
@@ -1710,6 +1739,11 @@ make_pass_cd_dce (gcc::context *ctxt)
   return new pass_cd_dce (ctxt);
 }
 
+gimple_opt_pass *
+make_pass_cd_dce2 (gcc::context *ctxt)
+{
+  return new pass_cd_dce (ctxt, true);
+}
 
 /* A cheap DCE interface.  WORKLIST is a list of possibly dead stmts and
    is consumed by this function.  The function has linear complexity in
