@@ -76,6 +76,15 @@ static int num_true_changes;
 /* Whether conditional execution changes were made.  */
 static int cond_exec_changed_p;
 
+/* REGNO bitmap for defs that may be stack frame address. */
+static bitmap bba_sets_may_be_sfp;
+
+/* REGNO bitmap for defs that must be stack frame address. */
+static bitmap bba_sets_must_be_sfp;
+
+/* true if current function doesn't have local address taken. */
+static bool cfun_no_stack_address_taken;
+
 /* Forward references.  */
 static int count_bb_insns (const_basic_block);
 static bool cheap_bb_rtx_cost_p (const_basic_block, profile_probability, int);
@@ -99,6 +108,13 @@ static int dead_or_predicable (basic_block, basic_block, basic_block,
 			       edge, int);
 static void noce_emit_move_insn (rtx, rtx);
 static rtx_insn *block_has_only_trap (basic_block);
+static bool noce_mem_is_on_stack (rtx_insn *a_insn, const_rtx x);
+static bool noce_valid_for_dominating (basic_block bb, rtx_insn *a_insn,
+                                       const_rtx x, bool is_store);
+static bool noce_mem_maybe_invalid_p (struct noce_if_info *if_info);
+static void find_all_must_be_sfp_insns (void);
+static void find_all_may_be_sfp_insns (void);
+static bool no_stack_address_taken (void);
 
 /* Count the number of non-jump active insns in BB.  */
 
@@ -2029,6 +2045,93 @@ noce_emit_bb (rtx last_insn, basic_block bb, bool simple)
   return true;
 }
 
+/* Return true if MEM x is on stack. a_insn contains x, if it exists. */
+
+static bool
+noce_mem_is_on_stack (rtx_insn *a_insn, const_rtx x)
+{
+  df_ref use;
+
+  gcc_assert (x);
+  gcc_assert (MEM_P (x));
+
+  /* Early exits if find base is a stack register. */
+  rtx a = XEXP (x, 0);
+  if (fixed_base_plus_p(a))
+    return true;
+
+  if (!a_insn)
+    return false;
+
+  if (!reg_mentioned_p (x, a_insn))
+    return false;
+
+  /* Check if x is on stack. Assume a mem expression using registers
+     related to stack register is always on stack. */
+  FOR_EACH_INSN_USE (use, a_insn)
+    if (reg_mentioned_p (DF_REF_REG (use), x)
+        && bitmap_bit_p (bba_sets_must_be_sfp, DF_REF_REGNO (use)))
+      return true;
+
+  return false;
+}
+
+/* Always return true, if there is a dominating write.
+   
+   When there is a dominating read from memory on stack,
+   1) if x = a is a memory read, return true.
+   2) if x = a is a memory write, return true if the memory is on stack.
+      This is the guarantee the memory is *not* readonly. */
+
+static bool
+noce_valid_for_dominating (basic_block bb, rtx_insn *a_insn,
+                           const_rtx x, bool is_store)
+{
+  rtx_insn *insn;
+  rtx set;
+
+  gcc_assert (MEM_P (x));
+
+  FOR_BB_INSNS (bb, insn)
+    {
+      set = single_set (insn);
+      if (!set)
+        continue;
+
+      /* Dominating store */
+      if (rtx_equal_p (x, SET_DEST (set)))
+        return true;
+
+      /* Dominating load */
+      if (rtx_equal_p (x, SET_SRC (set)))
+        if (is_store && noce_mem_is_on_stack (a_insn, x))
+          return true;
+    }
+
+  return false;
+}
+
+/* Return false if the memory a or b must be valid.
+   This function must be called before latent swap of a and b. */
+
+static bool
+noce_mem_maybe_invalid_p (struct noce_if_info *if_info)
+{
+  if (!if_info->set_b && MEM_P(if_info->orig_x))
+    {
+      if (!if_info->else_bb && MEM_P (if_info->b))
+        return !noce_valid_for_dominating (if_info->test_bb,
+                                           if_info->insn_a,
+                                           if_info->b, true);
+    }
+
+  /* ??? We could handle this if we knew that a load from A or B could
+     not trap or fault.  This is also true if we've already loaded
+     from the address along the path from ENTRY.  */
+  return (may_trap_or_fault_p (if_info->a)
+          || may_trap_or_fault_p (if_info->b));
+}
+
 /* Try more complex cases involving conditional_move.  */
 
 static int
@@ -2065,10 +2168,7 @@ noce_try_cmove_arith (struct noce_if_info *if_info)
       is_mem = 1;
     }
 
-  /* ??? We could handle this if we knew that a load from A or B could
-     not trap or fault.  This is also true if we've already loaded
-     from the address along the path from ENTRY.  */
-  else if (may_trap_or_fault_p (a) || may_trap_or_fault_p (b))
+  else if (noce_mem_maybe_invalid_p (if_info))
     return FALSE;
 
   /* if (test) x = a + b; else x = c - d;
@@ -2234,7 +2334,7 @@ noce_try_cmove_arith (struct noce_if_info *if_info)
   /* If insn to set up A clobbers any registers B depends on, try to
      swap insn that sets up A with the one that sets up B.  If even
      that doesn't help, punt.  */
-  if (modified_in_a && !modified_in_b)
+  if (!modified_in_a && modified_in_b)
     {
       if (!noce_emit_bb (emit_b, else_bb, b_simple))
 	goto end_seq_and_fail;
@@ -2242,7 +2342,7 @@ noce_try_cmove_arith (struct noce_if_info *if_info)
       if (!noce_emit_bb (emit_a, then_bb, a_simple))
 	goto end_seq_and_fail;
     }
-  else if (!modified_in_a)
+  else if (!modified_in_b)
     {
       if (!noce_emit_bb (emit_a, then_bb, a_simple))
 	goto end_seq_and_fail;
@@ -3563,12 +3663,27 @@ noce_process_if_block (struct noce_if_info *if_info)
     }
 
   if (!set_b && MEM_P (orig_x))
-    /* We want to avoid store speculation to avoid cases like
-	 if (pthread_mutex_trylock(mutex))
-	   ++global_variable;
-       Rather than go to much effort here, we rely on the SSA optimizers,
-       which do a good enough job these days.  */
-    return FALSE;
+    {
+      /* We want to avoid store speculation to avoid cases like
+           if (pthread_mutex_trylock(mutex))
+             ++global_variable;  
+         Tree if conversion cannot handle this case well, and it intends to
+         help vectorization for loops only. */
+      if (!noce_mem_is_on_stack(insn_a, orig_x))
+        return FALSE;
+
+      /* For case like,
+           if (pthread_mutex_trylock(mutex))
+             ++local_variable;
+         If any stack variable address is taken, potentially this local
+         variable could be modified by other threads and introduce store
+         speculation. */
+      if (!cfun_no_stack_address_taken)
+        return FALSE;
+    }
+
+  if_info->set_a = set_a;
+  if_info->set_b = set_b;
 
   if (noce_try_move (if_info))
     goto success;
@@ -5347,6 +5462,232 @@ dead_or_predicable (basic_block test_bb, basic_block merge_bb,
 
   return FALSE;
 }
+
+/* Find all insns that must be stack address and store REGNO into
+   bitmap bba_sets_must_be_sfp. */
+
+static void
+find_all_must_be_sfp_insns (void)
+{
+  rtx_insn *a_insn;
+  basic_block bb;
+  bool sfp_found;
+  auto_vec<int, 1> def_count;
+  df_ref def, use;
+
+  /* Calculate def counts for each insn. */
+  def_count.safe_grow_cleared (max_reg_num () + 1);
+  FOR_ALL_BB_FN (bb, cfun)
+    FOR_BB_INSNS (bb, a_insn)
+      {
+        if (!INSN_P (a_insn))
+          continue;
+
+        FOR_EACH_INSN_DEF (def, a_insn)
+          def_count[DF_REF_REGNO (def)]++;
+      }
+
+  /* Iterate all insns until finding all stack pointers, and store
+     them into bba_sets_must_be_sfp. */
+  bba_sets_must_be_sfp = BITMAP_ALLOC (&reg_obstack);
+  do
+    {
+      sfp_found = false;
+      FOR_ALL_BB_FN (bb, cfun)
+        FOR_BB_INSNS (bb, a_insn)
+          {
+            rtx sset_a = single_set (a_insn);
+            if (!sset_a)
+              continue;
+            rtx src = SET_SRC (sset_a);
+            rtx dest = SET_DEST (sset_a);
+
+            if (!REG_P (dest))
+              continue;
+
+            /* For the case below,
+                 Control flow: B1->B3, B2->B3
+                 B1: p = &local_var
+                 B2: p = &global_var
+                 B3: ... = *p
+               pointer p is an address for either local or global variable.
+               so we don't treat p as a stack address pointer. To make
+               algorithm simple, we ignore all non-SSA cases. */
+            bool skip_insn = false;
+            unsigned int dest_regno = 0;
+            FOR_EACH_INSN_DEF (def, a_insn)
+              {
+                dest_regno = DF_REF_REGNO (def);
+                /* Skip current insn if
+                   1) already marked as stack pointer.
+                   2) or see multiple definition points. */
+                if (bitmap_bit_p (bba_sets_must_be_sfp, dest_regno)
+                    || def_count[dest_regno] > 1)
+                  {
+                    skip_insn = true;
+                    break;
+                  }
+              }
+            if (skip_insn)
+              continue;
+
+            /* Handle case like "x1 = sp + offset". */
+            if (fixed_base_plus_p (src))
+              {
+  	        bitmap_set_bit (bba_sets_must_be_sfp, dest_regno);
+                sfp_found = true;
+                continue;
+              }
+
+            /* Handle case like "x2 = x1 + offset", in which x1 is already
+               identified as a stack pointer. */
+            if ((GET_CODE (src) == PLUS || GET_CODE (src) == MINUS)
+                && CONST_INT_P (XEXP (src, 1)))
+              {
+                rtx x1 = XEXP (src, 0);
+                if (!REG_P (x1))
+                  continue;
+
+                FOR_EACH_INSN_USE (use, a_insn)
+                  {
+                    if (!rtx_equal_p (x1, DF_REF_REG (use)))
+                      continue;
+
+                    if (bitmap_bit_p (bba_sets_must_be_sfp, DF_REF_REGNO (use)))
+                      {
+                        bitmap_set_bit (bba_sets_must_be_sfp, dest_regno);
+                        sfp_found = true;
+                        break;
+                      }
+                  }
+  	      }
+          }
+    }
+  while (sfp_found);
+}
+
+/* Find all insns that may be stack pointer and store REGNO into
+   bitmap bba_sets_may_be_sfp. We iterate all insns in current func
+   until no more latent insns generating stack address are found.
+   The collection of stack pointer bba_sets_may_be_sfp will be used
+   to help analyze local stack variable address taken. Stack variable
+   address can be passed out of current frame if only any stack pointer
+   is passed to hard register or stored into memory. */
+
+static void
+find_all_may_be_sfp_insns (void)
+{
+  rtx_insn *a_insn;
+  basic_block bb;
+  bool sfp_found;
+  bba_sets_may_be_sfp = BITMAP_ALLOC (&reg_obstack);
+
+  /* Iterate all insns that may be stack pointers, and store them into
+     bitmap bba_sets_must_be_sfp. */
+  do
+    {
+      sfp_found = false;
+      FOR_ALL_BB_FN (bb, cfun)
+        FOR_BB_INSNS (bb, a_insn)
+          {
+            /* Assume stack pointers can only be generated by single SET. */
+            rtx sset_a = single_set (a_insn);
+            if (!sset_a)
+              continue;
+            rtx src = SET_SRC (sset_a);
+            rtx dest = SET_DEST (sset_a);
+
+            /* If we see "hard_register = ...", which implies passing out
+               of current frame potentially, we don't collect this case.
+               It can be treated as address taken in no_stack_address_taken */
+            if (HARD_REGISTER_P (dest))
+              continue;
+
+            /* Memory load and store are not to generate stack pointer. */
+            if (MEM_P (src) || MEM_P (dest))
+              continue;
+
+            /* Skip insn that is already identified as stack pointer. */
+            bool skip_insn = false;
+            df_ref def;
+            unsigned int dest_regno = 0;
+            FOR_EACH_INSN_DEF (def, a_insn)
+              {
+                dest_regno = DF_REF_REGNO (def);
+                if (bitmap_bit_p (bba_sets_may_be_sfp, dest_regno))
+                  {
+                    skip_insn = true;
+                    break;
+                  }
+              }
+            if (skip_insn)
+              continue;
+
+            /* Collect all latent stack pointer insns. */
+            df_ref use;
+            FOR_EACH_INSN_USE (use, a_insn)
+              {
+                rtx x = DF_REF_REG (use);
+                if (x == frame_pointer_rtx || x == hard_frame_pointer_rtx
+                    || bitmap_bit_p (bba_sets_may_be_sfp, DF_REF_REGNO (use)))
+                  {
+                    bitmap_set_bit (bba_sets_may_be_sfp, dest_regno);
+                    sfp_found = true;
+                    break;
+                  }
+              }
+          }
+    }
+  while (sfp_found);
+}
+
+/* Return true if current function doesn't pass stack address out of frame. */
+
+static bool
+no_stack_address_taken (void)
+{
+  basic_block bb;
+  rtx_insn *a_insn;
+  df_ref use;
+
+  FOR_ALL_BB_FN (bb, cfun)
+    FOR_BB_INSNS (bb, a_insn)
+      {
+        if (!INSN_P (a_insn))
+          continue;
+
+        rtx sset_a = single_set (a_insn);
+        if (!sset_a)
+          continue;
+        rtx src = SET_SRC (sset_a);
+        rtx dest = SET_DEST (sset_a);
+
+        /* Skip insn that is already identified as frame pointers. */
+        if (bitmap_bit_p (bba_sets_may_be_sfp, REGNO (dest)))
+          continue;
+                    
+        FOR_EACH_INSN_USE (use, a_insn)
+          {
+            /* Check if current insn is using any stack pointer. Ignore
+               if it doesn't use frame pointers at all. */
+            if (!bitmap_bit_p (bba_sets_may_be_sfp, DF_REF_REGNO (use)))
+              continue;
+
+            /* Load cannot introduce address taken. */
+            if (MEM_P (src))
+              continue;
+
+            /* Store is safe if only the src doesn't contain stack pointer. */
+            if (MEM_P (dest)
+                && !reg_mentioned_p (DF_REF_REG (use), src))
+              continue;
+
+            /* All other cases potentially introduce address taken. */
+            return false;
+          }
+      }
+  return true;
+}
 
 /* Main entry point for all if-conversion.  AFTER_COMBINE is true if
    we are after combine pass.  */
@@ -5381,6 +5722,11 @@ if_convert (bool after_combine)
 
   df_set_flags (DF_LR_RUN_DCE);
 
+  /* Prepare for stack variable anslysis. */
+  find_all_must_be_sfp_insns ();
+  find_all_may_be_sfp_insns ();
+  cfun_no_stack_address_taken = no_stack_address_taken ();
+
   /* Go through each of the basic blocks looking for things to convert.  If we
      have conditional execution, we make multiple passes to allow us to handle
      IF-THEN{-ELSE} blocks within other IF-THEN{-ELSE} blocks.  */
@@ -5412,6 +5758,9 @@ if_convert (bool after_combine)
 #endif
     }
   while (cond_exec_changed_p);
+
+  BITMAP_FREE (bba_sets_may_be_sfp);
+  BITMAP_FREE (bba_sets_must_be_sfp);
 
 #ifdef IFCVT_MULTIPLE_DUMPS
   if (dump_file)
