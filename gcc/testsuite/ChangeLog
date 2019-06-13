@@ -2691,6 +2691,21 @@
 	2019-05-31  Dragan Mladjenovic  <dmladjenovic@wavecomp.com>
 	* gcc.target/mips/msa-fmadd.c: New.
 
+2019-06-13  Feng Xue  <fxue@os.amperecomputing.com>
+
+	PR tree-optimization/89713
+	* g++.dg/tree-ssa/empty-loop.C: New test.
+	* gcc.dg/tree-ssa/dce-2.c: New test.
+	* gcc.dg/const-1.c: Add -fno-finite-loops option.
+	* gcc.dg/graphite/graphite.exp: Likewise.
+	* gcc.dg/loop-unswitch-1.c: Likewise.
+	* gcc.dg/predict-9.c: Likewise.
+	* gcc.dg/pure-2.c: Likewise.
+	* gcc.dg/tree-ssa/20040211-1.c: Likewise.
+	* gcc.dg/tree-ssa/loop-10.c: Likewise.
+	* gcc.dg/tree-ssa/split-path-6.c: Likewise.
+	* gcc.dg/tree-ssa/ssa-thread-12.c: Likewise.
+
 2019-06-11  Thomas Koenig  <tkoenig@gcc.gnu.org>
 	Tomáš Trnka  <trnka@scm.com>
 
