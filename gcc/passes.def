@@ -321,7 +321,7 @@ along with GCC; see the file COPYING3.  If not see
 	 Clean them up.  */
       NEXT_PASS (pass_copy_prop);
       NEXT_PASS (pass_dse);
-      NEXT_PASS (pass_cd_dce2);
+      NEXT_PASS (pass_cd_dce);
       NEXT_PASS (pass_forwprop);
       NEXT_PASS (pass_phiopt, false /* early_p */);
       NEXT_PASS (pass_fold_builtins);

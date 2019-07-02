@@ -413,7 +413,6 @@ Objective-C and Objective-C++ Dialects}.
 -fdevirtualize-at-ltrans  -fdse @gol
 -fearly-inlining  -fipa-sra  -fexpensive-optimizations  -ffat-lto-objects @gol
 -ffast-math  -ffinite-math-only  -ffloat-store  -fexcess-precision=@var{style} @gol
-ffinite-loop @gol
 -fforward-propagate  -ffp-contract=@var{style}  -ffunction-sections @gol
 -fgcse  -fgcse-after-reload  -fgcse-las  -fgcse-lm  -fgraphite-identity @gol
 -fgcse-sm  -fhoist-adjacent-loads  -fif-conversion @gol
@@ -9510,20 +9509,6 @@ Perform conditional dead code elimination (DCE) for calls to built-in functions
 that may set @code{errno} but are otherwise free of side effects.  This flag is
 enabled by default at @option{-O2} and higher if @option{-Os} is not also
 specified.
-
-@item -ffinite-loop
-@opindex ffinite-loop
-@opindex fno-finite-loop
-Allow the compiler to assume that if finiteness of a loop can not be
-analytically determined, the loop must be finite. With the assumption, some
-aggressive transformation could be possible, such as removal of this kind
-of empty loop by dead code elimination (DCE).
-
-This option is not turned on by any @option{-O} option since it might result
-in incorrect behaviour for programs that contain seemly finite, but actually
-infinite loop.
-
-The default is @option{-fno-finite-loop}.
 
 @item -ftree-dominator-opts
 @opindex ftree-dominator-opts

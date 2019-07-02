@@ -1437,10 +1437,6 @@ ffinite-math-only
 Common Report Var(flag_finite_math_only) Optimization SetByCombined
 Assume no NaNs or infinities are generated.
 
-ffinite-loop
-Common Report Var(flag_finite_loop) Optimization
-Assume loops are finite if can not be analytically determined.
-
 ffixed-
 Common Joined RejectNegative Var(common_deferred_options) Defer
 -ffixed-<register>	Mark <register> as being unavailable to the compiler.
