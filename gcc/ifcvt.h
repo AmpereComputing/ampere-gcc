@@ -73,8 +73,6 @@ struct noce_if_info
 
   /* The SET_SRC of INSN_A and INSN_B.  */
   rtx a, b;
-  /* The SET of INSN_A and INSN_B.  */
-  rtx set_a, set_b;
 
   /* The SET_DEST of INSN_A.  */
   rtx x;

@@ -341,30 +341,6 @@ rtx_varies_p (const_rtx x, bool for_alias)
   return 0;
 }
 
-/* Nonzero if X has the form (PLUS frame-pointer integer).  */
-
-bool
-fixed_base_plus_p (rtx x)
-{
-  switch (GET_CODE (x))
-    {
-    case REG:
-      if (x == frame_pointer_rtx || x == hard_frame_pointer_rtx)
-        return true;
-      if (x == arg_pointer_rtx && fixed_regs[ARG_POINTER_REGNUM])
-        return true;
-      return false;
-
-    case PLUS:
-      if (!CONST_INT_P (XEXP (x, 1)))
-        return false;
-      return fixed_base_plus_p (XEXP (x, 0));
-
-    default:
-      return false;
-    }
-}
-
 /* Compute an approximation for the offset between the register
    FROM and TO for the current function, as it was at the start
    of the routine.  */

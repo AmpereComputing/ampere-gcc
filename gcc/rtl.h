@@ -3750,8 +3750,6 @@ extern struct target_rtl *this_target_rtl;
 #define hard_frame_pointer_rtx	(global_rtl[GR_HARD_FRAME_POINTER])
 #define arg_pointer_rtx		(global_rtl[GR_ARG_POINTER])
 
-extern bool fixed_base_plus_p (rtx x);
-
 #ifndef GENERATOR_FILE
 /* Return the attributes of a MEM rtx.  */
 static inline const struct mem_attrs *

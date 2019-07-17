@@ -540,6 +540,7 @@ static bitmap cse_ebb_live_in, cse_ebb_live_out;
    already as part of an already processed extended basic block.  */
 static sbitmap cse_visited_basic_blocks;
 
+static bool fixed_base_plus_p (rtx x);
 static int notreg_cost (rtx, machine_mode, enum rtx_code, int);
 static int preferable (int, int, int, int);
 static void new_basic_block (void);
@@ -605,6 +606,30 @@ static machine_mode cse_cc_succs (basic_block, basic_block, rtx, rtx,
 
 static const struct rtl_hooks cse_rtl_hooks = RTL_HOOKS_INITIALIZER;
 
+/* Nonzero if X has the form (PLUS frame-pointer integer).  */
+
+static bool
+fixed_base_plus_p (rtx x)
+{
+  switch (GET_CODE (x))
+    {
+    case REG:
+      if (x == frame_pointer_rtx || x == hard_frame_pointer_rtx)
+	return true;
+      if (x == arg_pointer_rtx && fixed_regs[ARG_POINTER_REGNUM])
+	return true;
+      return false;
+
+    case PLUS:
+      if (!CONST_INT_P (XEXP (x, 1)))
+	return false;
+      return fixed_base_plus_p (XEXP (x, 0));
+
+    default:
+      return false;
+    }
+}
+
 /* Dump the expressions in the equivalence class indicated by CLASSP.
    This function is used only for debugging.  */
 DEBUG_FUNCTION void
