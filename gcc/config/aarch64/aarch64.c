@@ -781,6 +781,24 @@ static const struct cpu_vector_cost a64fx_vector_cost =
   1 /* cond_not_taken_branch_cost  */
 };
 
+static const cpu_vector_cost ampere1_advsimd_vector_cost =
+{
+  1, /* scalar_int_stmt_cost  */
+  5, /* scalar_fp_stmt_cost  */
+  4, /* scalar_load_cost  */
+  2, /* scalar_store_cost  */
+  4, /* vec_int_stmt_cost  */
+  5, /* vec_fp_stmt_cost  */
+  5, /* vec_permute_cost  */
+  10, /* vec_to_scalar_cost  */
+  5, /* scalar_to_vec_cost  */
+  6, /* vec_align_load_cost  */
+  6, /* vec_unalign_load_cost  */
+  6, /* vec_unalign_store_cost  */
+  4, /* vec_store_cost  */
+  1, /* cond_taken_branch_cost  */
+  1  /* cond_not_taken_branch_cost  */
+};
 
 /* Generic costs for branch instructions.  */
 static const struct cpu_branch_cost generic_branch_cost =
@@ -922,6 +940,17 @@ static const cpu_prefetch_tune a64fx_prefetch_tune =
   true,			/* prefetch_dynamic_strides */
   -1,			/* minimum_stride */
   -1			/* default_opt_level  */
+};
+
+static const cpu_prefetch_tune ampere1_prefetch_tune =
+{
+  0,                   /* num_slots  */
+  64,                  /* l1_cache_size  */
+  64,                  /* l1_cache_line_size  */
+  2048,                        /* l2_cache_size  */
+  true,                        /* prefetch_dynamic_strides */
+  -1,                  /* minimum_stride */
+  -1                   /* default_opt_level  */
 };
 
 static const struct tune_params generic_tunings =
@@ -1382,6 +1411,36 @@ static const struct tune_params neoversen1_tunings =
   tune_params::AUTOPREFETCHER_WEAK,	/* autoprefetcher_model.  */
   (AARCH64_EXTRA_TUNE_NONE),	/* tune_flags.  */
   &generic_prefetch_tune
+};
+
+static const struct tune_params ampere1_tunings =
+{
+  &ampere1_extra_costs,
+  &generic_addrcost_table,
+  &generic_regmove_cost,
+  &ampere1_advsimd_vector_cost,
+  &generic_branch_cost,
+  &generic_approx_modes,
+  SVE_NOT_IMPLEMENTED, /* sve_width  */
+  4, /* memmov_cost  */
+  4, /* issue_rate  */
+  (AARCH64_FUSE_ADRP_ADD | AARCH64_FUSE_AES_AESMC |
+   AARCH64_FUSE_MOV_MOVK | AARCH64_FUSE_MOVK_MOVK |
+   AARCH64_FUSE_ALU_BRANCH /* adds, ands, bics, ccmp, ccmn */ |
+   AARCH64_FUSE_CMP_BRANCH),
+  /* fusible_ops  */
+  "32",                /* function_align.  */
+  "4",         /* jump_align.  */
+  "32:16",     /* loop_align.  */
+  2,   /* int_reassoc_width.  */
+  4,   /* fp_reassoc_width.  */
+  2,   /* vec_reassoc_width.  */
+  2,   /* min_div_recip_mul_sf.  */
+  2,   /* min_div_recip_mul_df.  */
+  0,   /* max_case_values.  */
+  tune_params::AUTOPREFETCHER_WEAK,    /* autoprefetcher_model.  */
+  (AARCH64_EXTRA_TUNE_NONE),           /* tune_flags.  */
+  &ampere1_prefetch_tune
 };
 
 static const struct tune_params neoversev1_tunings =
