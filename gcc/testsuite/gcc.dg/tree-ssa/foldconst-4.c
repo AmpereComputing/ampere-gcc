@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O -fdump-tree-ccp2" } */
+/* { dg-options "-O -fdump-tree-ccp3" } */
 
 struct a {int a,b;};
 const static struct a a;
@@ -10,4 +10,4 @@ test()
 {
   return a.a+b[c];
 }
-/* { dg-final { scan-tree-dump "return 0;" "ccp2" } } */
+/* { dg-final { scan-tree-dump "return 0;" "ccp3" } } */

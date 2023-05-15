@@ -29,6 +29,7 @@ struct register_pass_info;
   DEF_PASS_LIST (all_lowering_passes) \
   DEF_PASS_LIST (all_small_ipa_passes) \
   DEF_PASS_LIST (all_regular_ipa_passes) \
+  DEF_PASS_LIST (all_regular_ipa_wpt_passes) \
   DEF_PASS_LIST (all_late_ipa_passes) \
   DEF_PASS_LIST (all_passes)
 
@@ -91,6 +92,7 @@ public:
   opt_pass *all_small_ipa_passes;
   opt_pass *all_lowering_passes;
   opt_pass *all_regular_ipa_passes;
+  opt_pass *all_regular_ipa_wpt_passes;
   opt_pass *all_late_ipa_passes;
 
   /* A map from static pass id to optimization pass.  */
@@ -127,6 +129,7 @@ private:
 
 #define INSERT_PASSES_AFTER(PASS)
 #define PUSH_INSERT_PASSES_WITHIN(PASS)
+#define PUSH_INSERT_PASSES_WITHIN_NUM(PASS, NUM)
 #define POP_INSERT_PASSES()
 #define NEXT_PASS(PASS, NUM) opt_pass *PASS ## _ ## NUM
 #define NEXT_PASS_WITH_ARG(PASS, NUM, ARG) NEXT_PASS (PASS, NUM)
@@ -136,6 +139,7 @@ private:
 
 #undef INSERT_PASSES_AFTER
 #undef PUSH_INSERT_PASSES_WITHIN
+#undef PUSH_INSERT_PASSES_WITHIN_NUM
 #undef POP_INSERT_PASSES
 #undef NEXT_PASS
 #undef NEXT_PASS_WITH_ARG

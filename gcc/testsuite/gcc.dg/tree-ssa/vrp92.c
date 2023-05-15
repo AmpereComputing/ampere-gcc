@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdisable-tree-evrp -fno-tree-fre -fdump-tree-vrp1 -fdisable-tree-ethread" } */
+/* { dg-options "-O2 -fdisable-tree-evrp -fno-tree-fre -fdump-tree-vrp1 -fdisable-tree-ethread1" } */
 
 void bar (void);
 int foo (int i, int j)

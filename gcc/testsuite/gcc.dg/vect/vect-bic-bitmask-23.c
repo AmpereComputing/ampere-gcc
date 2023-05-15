@@ -14,4 +14,4 @@ v4si fun(v4si x)
     return (x & ~mask) == zeros;
 }
 
-/* { dg-final { scan-tree-dump {<=\s*.+\{ 255, 15, 1, 65535 \}} dce7 { target vect_int } } } */
+/* { dg-final { scan-tree-dump {<=\s*.+\{ 255, 15, 1, 65535 \}} dce8 { target vect_int } } } */

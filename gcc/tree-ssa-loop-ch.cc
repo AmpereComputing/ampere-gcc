@@ -283,6 +283,7 @@ class ch_base : public gimple_opt_pass
       : gimple_opt_pass (data, ctxt)
     {}
 
+public:
   /* Copies headers of all loops in FUN for which process_loop_p is true.  */
   unsigned int copy_headers (function *fun);
 
@@ -631,6 +632,16 @@ pass_ch_vect::process_loop_p (class loop *loop)
 }
 
 } // anon namespace
+
+/* Do loop rotation to transform from do-while to while-do. */
+
+extern unsigned int
+copy_headers_1 (function *fun)
+{
+  pass_ch ch(0);
+
+  return ch.copy_headers (fun);
+}
 
 gimple_opt_pass *
 make_pass_ch_vect (gcc::context *ctxt)

@@ -2412,7 +2412,8 @@ sem_item_optimizer::filter_removed_items (void)
 	      /* Filter out non-readonly variables.  */
 	      tree decl = item->decl;
 	      varpool_node *vnode = static_cast <sem_variable *>(item)->get_node ();
-	      if (!TREE_READONLY (decl) || vnode->body_removed)
+	      if (!TREE_READONLY (decl) || vnode->body_removed
+		  || (flag_devirtualize_fully && DECL_VIRTUAL_P (decl)))
 		remove_item (item);
 	      else
 		filtered.safe_push (item);

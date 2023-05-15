@@ -112,8 +112,19 @@ along with GCC; see the file COPYING3.  If not see
 #include "rtl.h"
 #include "tree.h"
 #include "gimple.h"
+#include "gimple-iterator.h"
+#include "gimplify.h"
+#include "gimplify-me.h"
+#include "cfghooks.h"
+#include "cfganal.h"
+#include "ssa.h"
 #include "alloc-pool.h"
 #include "tree-pass.h"
+#include "tree-cfg.h"
+#include "tree-dfa.h"
+#include "tree-eh.h"
+#include "tree-into-ssa.h"
+#include "tree-cfgcleanup.h"
 #include "cgraph.h"
 #include "lto-streamer.h"
 #include "fold-const.h"
@@ -189,6 +200,7 @@ static void warn_odr (tree t1, tree t2, tree st1, tree st2,
 
 static bool odr_violation_reported = false;
 
+static bool vcall_fixup_done = false;
 
 /* Pointer set of all call targets appearing in the cache.  */
 static hash_set<cgraph_node *> *cached_polymorphic_call_targets;
@@ -216,72 +228,125 @@ struct GTY(()) odr_type_d
   int id;
   /* Is it in anonymous namespace? */
   bool anonymous_namespace;
-  /* Do we know about all derivations of given type?  */
-  bool all_derivations_known;
   /* Did we report ODR violation here?  */
   bool odr_violated;
   /* Set when virtual table without RTTI prevailed table with.  */
   bool rtti_broken;
   /* Set when the canonical type is determined using the type name.  */
   bool tbaa_enabled;
+  /* Set when type contains virtual base.  */
+  bool has_virtual_base;
+
+  bool whole_program_local_p ();
+
+  /* Do we know about all derivations of given type?  */
+  bool all_derivations_known_p ()
+  {
+    if (!RECORD_OR_UNION_TYPE_P (type))
+      return true;
+
+    if (TYPE_FINAL_P (type))
+      return true;
+
+    return whole_program_local_p ();
+  }
+
+  bool possibly_instantiated_p ();
+
+  void set_has_virtual_base ()
+  {
+    if (!has_virtual_base)
+      {
+	unsigned i;
+	odr_type derived;
+
+	has_virtual_base = true;
+
+	FOR_EACH_VEC_ELT (derived_types, i, derived)
+	  derived->set_has_virtual_base ();
+      }
+  }
 };
 
-/* Return TRUE if all derived types of T are known and thus
-   we may consider the walk of derived type complete.
+/* Given TYPE, return its primary vtable if it is a polymorphic class,
+   otherwise return NULL.  */
 
-   This is typically true only for final anonymous namespace types and types
+tree
+get_type_vtable (tree type)
+{
+  tree binfo = TYPE_BINFO (type);
+
+  if (!binfo)
+    return NULL;
+
+  tree vtable = BINFO_VTABLE (binfo);
+  unsigned HOST_WIDE_INT offset;
+
+  if (!vtable || !vtable_pointer_value_to_vtable (vtable, &vtable, &offset))
+    return NULL;
+
+  return vtable;
+}
+
+/* Return TRUE if the ODR type is local in whole-program scope.
+
+   This is typically true for final anonymous namespace types and types
    defined within functions (that may be COMDAT and thus shared across units,
-   but with the same set of derived types).  */
+   but with the same set of derived types).
+
+   A FINAL type could not imply it is whole-program local, since it might
+   be used in external library.  */
 
 bool
-type_all_derivations_known_p (const_tree t)
+odr_type_d::whole_program_local_p ()
 {
-  if (TYPE_FINAL_P (t))
-    return true;
-  if (flag_ltrans)
-    return false;
-  /* Non-C++ types may have IDENTIFIER_NODE here, do not crash.  */
-  if (!TYPE_NAME (t) || TREE_CODE (TYPE_NAME (t)) != TYPE_DECL)
-    return true;
-  if (type_in_anonymous_namespace_p (t))
-    return true;
-  return (decl_function_context (TYPE_NAME (t)) != NULL);
+  if (in_lto_p)
+    return TYPE_CXX_LOCAL (type);
+
+  /* Although a local class is always considered as whole program local in
+     LGEN stage, but may not in LTO stage if multiple duplicated primary
+     vtables are attached to the class due to C++ privatizing via -fno-weak.
+     Thus, we can not set TYPE_CXX_LOCAL flag for local class at LGEN stage
+     when building ODR type.  */
+  return anonymous_namespace || decl_function_context (TYPE_NAME (type));
 }
 
-/* Return TRUE if type's constructors are all visible.  */
+/* Return TRUE if ODR type may have any instance.  */
 
-static bool
-type_all_ctors_visible_p (tree t)
+bool
+odr_type_d::possibly_instantiated_p ()
 {
-  return !flag_ltrans
-	 && symtab->state >= CONSTRUCTION
-	 /* We cannot always use type_all_derivations_known_p.
-	    For function local types we must assume case where
-	    the function is COMDAT and shared in between units.
+  gcc_assert (symtab->state >= CONSTRUCTION);
 
-	    TODO: These cases are quite easy to get, but we need
-	    to keep track of C++ privatizing via -Wno-weak
-	    as well as the  IPA privatizing.  */
-	 && type_in_anonymous_namespace_p (t);
-}
-
-/* Return TRUE if type may have instance.  */
-
-static bool
-type_possibly_instantiated_p (tree t)
-{
-  tree vtable;
-  varpool_node *vnode;
-
-  /* TODO: Add abstract types here.  */
-  if (!type_all_ctors_visible_p (t))
+  if (!RECORD_OR_UNION_TYPE_P (type) || !whole_program_local_p ())
     return true;
 
-  vtable = BINFO_VTABLE (TYPE_BINFO (t));
-  if (TREE_CODE (vtable) == POINTER_PLUS_EXPR)
-    vtable = TREE_OPERAND (TREE_OPERAND (vtable, 0), 0);
-  vnode = varpool_node::get (vtable);
-  return vnode && vnode->definition;
+  tree vtable = get_type_vtable (type);
+
+  if (!vtable)
+    return true;
+
+  varpool_node *vtable_node = varpool_node::get (vtable);
+
+  /* FINAL class or class w/o virtual base has only one vtable, so just to
+     check availability of primary vtable is enough.
+
+     TODO: handle possible construction vtables when virtual inheritance
+     exists.  */
+  if (!has_virtual_base || derived_types.is_empty ())
+    return vtable_node && vtable_node->definition;
+
+  return true;
+}
+
+/* Return TRUE if T is local in whole-program scope.  */
+
+static inline bool
+type_whole_program_local_p (tree t)
+{
+  odr_type type = get_odr_type (t);
+
+  return type && type->whole_program_local_p ();
 }
 
 /* Return true if T or type derived from T may have instance.  */
@@ -289,7 +354,7 @@ type_possibly_instantiated_p (tree t)
 static bool
 type_or_derived_type_possibly_instantiated_p (odr_type t)
 {
-  if (type_possibly_instantiated_p (t->type))
+  if (t->possibly_instantiated_p ())
     return true;
   for (auto derived : t->derived_types)
     if (type_or_derived_type_possibly_instantiated_p (derived))
@@ -1924,6 +1989,29 @@ obj_type_ref_class (const_tree ref, bool for_dump_p)
   return ret;
 }
 
+/* Return true if TYPE contains any virtual base.  */
+
+static bool
+type_has_virtual_base_p (tree type)
+{
+  tree binfo = TYPE_BINFO (type);
+
+  if (!binfo)
+    return false;
+
+  if (auto ot = get_odr_type (type))
+    return ot->has_virtual_base;
+
+  for (auto base_binfo : *BINFO_BASE_BINFOS (binfo))
+    {
+      if (BINFO_VIRTUAL_P (base_binfo)
+	  || type_has_virtual_base_p (BINFO_TYPE (base_binfo)))
+	return true;
+    }
+
+  return false;
+}
+
 /* Get ODR type hash entry for TYPE.  If INSERT is true, create
    possibly new entry.  */
 
@@ -1966,9 +2054,10 @@ get_odr_type (tree type, bool insert)
       val->bases = vNULL;
       val->derived_types = vNULL;
       if (type_with_linkage_p (type))
-        val->anonymous_namespace = type_in_anonymous_namespace_p (type);
+	val->anonymous_namespace = type_in_anonymous_namespace_p (type);
       else
 	val->anonymous_namespace = 0;
+
       build_bases = COMPLETE_TYPE_P (val->type);
       insert_to_odr_array = true;
       *slot = val;
@@ -1983,20 +2072,34 @@ get_odr_type (tree type, bool insert)
 
       gcc_assert (BINFO_TYPE (TYPE_BINFO (val->type)) == type);
 
-      val->all_derivations_known = type_all_derivations_known_p (type);
       for (i = 0; i < BINFO_N_BASE_BINFOS (binfo); i++)
 	/* For now record only polymorphic types. other are
 	   pointless for devirtualization and we cannot precisely
 	   determine ODR equivalency of these during LTO.  */
 	if (polymorphic_type_binfo_p (BINFO_BASE_BINFO (binfo, i)))
 	  {
-	    tree base_type= BINFO_TYPE (BINFO_BASE_BINFO (binfo, i));
+	    tree base_type = BINFO_TYPE (BINFO_BASE_BINFO (binfo, i));
 	    odr_type base = get_odr_type (base_type, true);
 	    gcc_assert (TYPE_MAIN_VARIANT (base_type) == base_type);
+
+	    /* Propagate has_virtual_base flag to all derived classes.  */
+	    if (base->has_virtual_base
+		|| BINFO_VIRTUAL_P (BINFO_BASE_BINFO (binfo, i)))
+	      val->set_has_virtual_base ();
+
 	    base->derived_types.safe_push (val);
 	    val->bases.safe_push (base);
 	    if (base->id > base_id)
 	      base_id = base->id;
+	  }
+	else
+	  {
+	    tree base_type = BINFO_TYPE (BINFO_BASE_BINFO (binfo, i));
+
+	    /* Propagate has_virtual_base flag to all derived classes.  */
+	    if (BINFO_VIRTUAL_P (BINFO_BASE_BINFO (binfo, i))
+		|| type_has_virtual_base_p (base_type))
+	      val->set_has_virtual_base ();
 	  }
       }
   /* Ensure that type always appears after bases.  */
@@ -2120,15 +2223,35 @@ register_odr_type (tree type)
     }
 }
 
+/* Return TRUE if all derived types of T are known and thus
+   we may consider the walk of derived type complete.  */
+
+bool
+type_all_derivations_known_p (tree t)
+{
+  /* Non-C++ types may have IDENTIFIER_NODE here, do not crash.  */
+  if (!TYPE_NAME (t) || TREE_CODE (TYPE_NAME (t)) != TYPE_DECL)
+    return true;
+
+  if (!odr_hash || !can_be_name_hashed_p (t))
+    return false;
+
+  odr_type type = get_odr_type (t, true);
+
+  return type->all_derivations_known_p ();
+}
+
 /* Return true if type is known to have no derivations.  */
 
 bool
 type_known_to_have_no_derivations_p (tree t)
 {
-  return (type_all_derivations_known_p (t)
-	  && (TYPE_FINAL_P (t)
-	      || (odr_hash
-		  && !get_odr_type (t, true)->derived_types.length())));
+  if (!odr_hash || !can_be_name_hashed_p (t))
+    return false;
+
+  odr_type type = get_odr_type (t, true);
+
+  return type->all_derivations_known_p () && !type->derived_types.length();
 }
 
 /* Dump ODR type T and all its derived types.  INDENT specifies indentation for
@@ -2140,8 +2263,15 @@ dump_odr_type (FILE *f, odr_type t, int indent=0)
   unsigned int i;
   fprintf (f, "%*s type %i: ", indent * 2, "", t->id);
   print_generic_expr (f, t->type, TDF_SLIM);
-  fprintf (f, "%s", t->anonymous_namespace ? " (anonymous namespace)":"");
-  fprintf (f, "%s\n", t->all_derivations_known ? " (derivations known)":"");
+  if (t->anonymous_namespace)
+    fprintf (f, " (anonymous namespace)");
+  if (t->has_virtual_base)
+    fprintf (f, " (virtual base)");
+  if (t->whole_program_local_p ())
+    fprintf (f, " (whole program local)");
+  else if (t->all_derivations_known_p ())
+    fprintf (f, " (derivations known)");
+  fprintf (f, "\n");
   if (TYPE_NAME (t->type))
     {
       if (DECL_ASSEMBLER_NAME_SET_P (TYPE_NAME (t->type)))
@@ -2322,6 +2452,263 @@ build_type_inheritance_graph (void)
   timevar_pop (TV_IPA_INHERITANCE);
 }
 
+/* Return typeinfo referenced by VTABLE.  If REMOVE is TRUE, replace all
+   typeinfo addresses in VTABLE with zero values.  */
+
+static tree
+extract_typeinfo_in_vtable (tree vtable, bool remove = false)
+{
+  tree init = ctor_for_folding (vtable);
+  tree typeinfo = NULL;
+
+  if (init == error_mark_node)
+    return NULL;
+
+  for (unsigned i = 0; i < CONSTRUCTOR_NELTS (init); i++)
+    {
+      constructor_elt *elt = CONSTRUCTOR_ELT (init, i);
+      tree value = elt->value;
+
+      STRIP_NOPS (value);
+
+      if (TREE_CODE (value) != ADDR_EXPR)
+	continue;
+
+      value = TREE_OPERAND (value, 0);
+      if (TREE_CODE (value) == FUNCTION_DECL)
+	continue;
+
+      gcc_assert (VAR_P (value) && !DECL_VIRTUAL_P (value));
+
+      if (!remove)
+	return value;
+
+      if (typeinfo)
+	gcc_assert (typeinfo == value);
+      else
+	typeinfo = value;
+
+      elt->value = build_zero_cst (TREE_TYPE (elt->value));
+    }
+
+  return typeinfo;
+}
+
+/* Return typeinfo referenced by vtable represented by VNODE.  If REMOVE
+   is TRUE, replace all typeinfo addresses in vtable with zero values.  */
+
+static symtab_node *
+extract_typeinfo_in_vtable_node (varpool_node *vnode, bool remove)
+{
+  symtab_node *typeinfo = NULL;
+  ipa_ref *ref;
+
+  for (unsigned i = 0; vnode->iterate_reference (i, ref); i++)
+    {
+      symtab_node *referred = ref->referred;
+
+      if (ref->use == IPA_REF_ADDR && is_a <varpool_node *> (referred))
+	{
+	  /* This is a VTT (vtable table), not vtable.  */
+	  if (DECL_VIRTUAL_P (referred->decl))
+	    {
+	      gcc_assert (!typeinfo);
+	      return NULL;
+	    }
+
+	  if (!remove)
+	    return referred;
+
+	  if (typeinfo)
+	    gcc_assert (typeinfo == referred);
+	  else
+	    typeinfo = referred;
+
+	  ref->remove_reference ();
+	  i--;
+	}
+    }
+
+  tree decl = extract_typeinfo_in_vtable (vnode->decl, remove);
+
+  if (typeinfo)
+    gcc_assert (typeinfo->decl == decl);
+  else if (decl)
+    typeinfo = varpool_node::get (decl);
+
+  return typeinfo;
+}
+
+/* Find out C++ polymorphic classes that are used locally in terms of lto
+   whole program scope.  If full devirtualization is off, we only consider
+   local class in function or anonymous namespace.  Otherwise, we will resort
+   to lto-linker-plugin symbol resolution to check whether vtable and typeinfo
+   symbols of a given class are referenced by any external regular object or
+   library.  At same time, since typeinfo is used to carry symbol resolution
+   information, it is always generated even user specifies -fno-rtti at LGEN
+   compilation, and removal of typeinfo is postponed to this procedure.  */
+
+void
+identify_whole_program_local_types (void)
+{
+  hash_set<lto_file_decl_data *> *no_rtti_files = NULL;
+  varpool_node *vnode;
+
+  gcc_assert (in_lto_p && !flag_ltrans);
+
+  if (!odr_hash)
+    return;
+
+  if (flag_devirtualize_fully)
+    {
+      lto_file_decl_data *prev_file_data = NULL;
+      cgraph_node *cnode;
+
+      /* Effect of -fno-rtti is file-wide, collect those files that -fno-rtti
+	 has been specified for.  */
+      FOR_EACH_FUNCTION (cnode)
+	{
+	  lto_file_decl_data *file_data = cnode->lto_file_data;
+
+	  if (DECL_FUNCTION_SPECIFIC_OPTIMIZATION (cnode->decl)
+	      && !opt_for_fn (cnode->decl, flag_rtti)
+	      && prev_file_data != file_data && file_data)
+	    {
+	      if (!no_rtti_files)
+		no_rtti_files = new hash_set<lto_file_decl_data *> ();
+	      no_rtti_files->add (file_data);
+
+	      /* Symbols coming from same lto file are likely to be grouped
+		 together. Based on this fact, here is a minor optimization
+		 that we do not add lto file if it is the one just added.  */
+	      prev_file_data = file_data;
+	    }
+	}
+    }
+
+  FOR_EACH_DEFINED_VARIABLE (vnode)
+    {
+      tree decl = vnode->decl;
+      symtab_node *typeinfo = NULL;
+
+      if (!DECL_VIRTUAL_P (decl) || DECL_EXTERNAL (decl))
+	continue;
+
+      if (flag_devirtualize_fully)
+	{
+	  bool remove_rtti = no_rtti_files
+			     && no_rtti_files->contains (vnode->lto_file_data);
+
+	  /* Remove typeinfo if its referring vtable is originated from a file
+	     that is impacted by -fno-rtti.  */
+	  typeinfo = extract_typeinfo_in_vtable_node (vnode, remove_rtti);
+	}
+
+      tree class_type = DECL_CONTEXT (decl);
+      odr_type type = get_odr_type (class_type);
+
+      if (!type->anonymous_namespace
+	  && !decl_function_context (TYPE_NAME (class_type)))
+	{
+	  /* This is a VTT (vtable table), or user specified -fno-rtti, but
+	     forgot -fdevirtualize-fully at LGEN compilation.  */
+	  if (!typeinfo)
+	    continue;
+
+	  /* If vtable of public class has no linkage (occurs with -fno-weak),
+	     lto-linker-plugin could not enforce symbol resolution and tell us
+	     nothing, just conservatively skip the class.  */
+	  if (!TREE_PUBLIC (decl))
+	    continue;
+
+	  /* Symbol with resolution as LDPR_PREVAILING_DEF_IRONLY_EXP allows
+	     external reference from dynamic library, which can not be known
+	     at link time.  */
+	  if (vnode->resolution != LDPR_PREVAILING_DEF_IRONLY
+	      || typeinfo->resolution != LDPR_PREVAILING_DEF_IRONLY)
+	    continue;
+	}
+
+      /* Skip class type that violates odr constraint, since types in conflict
+	 may have incompatible vtable definition.  */
+      if (type->odr_violated)
+	{
+	  gcc_assert (!type->anonymous_namespace);
+	  continue;
+	}
+
+      tree vtable = get_type_vtable (class_type);
+
+      gcc_assert (vtable);
+
+      if (vtable != vnode->decl)
+	{
+	  /* This is not primary vtable of a class type, just a construction
+	     vtable for one of its virtual base.  */
+	  gcc_assert (type->has_virtual_base);
+	  continue;
+	}
+
+      bool is_final = type->derived_types.is_empty ();
+
+      if (type->types)
+	{
+	  tree equiv_type;
+	  bool multi_vtable_p = false;
+	  unsigned i;
+
+	  /* Some kind of class type (public class w/o key member function,
+	     and local class in a public inline function) requires COMDAT-like
+	     vtable so as to be shared among units.  But C++ privatizing via
+	     -fno-weak would introduce multiple static vtable copies for one
+	     class in merged lto symbol table.  This breaks one-to-one
+	     correspondence between class and vtable, and makes class liveness
+	     check become not that easy.  To be simple, we exclude such class
+	     type from our choice list.
+
+	     TODO: lto_symtab_merge_symbols() currently only merges public and
+	     external symbols, it could be extended to combine identical
+	     static symbols similar to COMDAT.  */
+	  if (class_type != type->type
+	      && (vtable != get_type_vtable (type->type)))
+	    continue;
+
+	  FOR_EACH_VEC_ELT (*(type->types), i, equiv_type)
+	    {
+	      if (COMPLETE_TYPE_P (equiv_type)
+		  && (vtable != get_type_vtable (equiv_type)))
+		{
+		  multi_vtable_p = true;
+		  break;
+		}
+	    }
+
+	  if (multi_vtable_p)
+	    continue;
+
+	  /* Mark all equivalent types in the ODR type as whole program local,
+	     because representative type of the ODR type at LTRANS might not
+	     be the one at WPA.  */
+	  FOR_EACH_VEC_ELT (*(type->types), i, equiv_type)
+	    {
+	      TYPE_CXX_LOCAL (equiv_type) = 1;
+
+	      /* If no derivation, whole program local type is marked as
+		 FINAL, which could help devirtualization at LTRANS even
+		 there will be more than one partitions.  */
+	      if (is_final)
+		TYPE_FINAL_P (equiv_type) = 1;
+	    }
+	}
+
+      TYPE_CXX_LOCAL (type->type) = 1;
+      if (is_final)
+	TYPE_FINAL_P (type->type) = 1;
+    }
+
+  delete no_rtti_files;
+}
+
 /* Return true if N has reference from live virtual table
    (and thus can be a destination of polymorphic call). 
    Be conservatively correct when callgraph is not built or
@@ -2398,11 +2785,9 @@ maybe_record_node (vec <cgraph_node *> &nodes,
 
   if (!can_refer)
     {
-      /* The only case when method of anonymous namespace becomes unreferable
-	 is when we completely optimized it out.  */
-      if (flag_ltrans
-	  || !target 
-	  || !type_in_anonymous_namespace_p (DECL_CONTEXT (target)))
+      /* The only case when method of whole-program local class type becomes
+	 unreferable is when we completely optimized it out.  */
+      if (!target || !type_whole_program_local_p (DECL_CONTEXT (target)))
 	*completep = false;
       return;
     }
@@ -2435,7 +2820,7 @@ maybe_record_node (vec <cgraph_node *> &nodes,
      Currently we ignore these functions in speculative devirtualization.
      ??? Maybe it would make sense to be more aggressive for LTO even
      elsewhere.  */
-  if (!flag_ltrans
+  if ((!flag_ltrans || flag_devirtualize_fully)
       && !pure_virtual
       && type_in_anonymous_namespace_p (DECL_CONTEXT (target))
       && (!target_node
@@ -2485,8 +2870,8 @@ maybe_record_node (vec <cgraph_node *> &nodes,
       if (flag_sanitize & SANITIZE_UNREACHABLE)
 	*completep = false;
     }
-  else if (flag_ltrans
-	   || !type_in_anonymous_namespace_p (DECL_CONTEXT (target)))
+  else if (!type_whole_program_local_p (DECL_CONTEXT (target))
+	   || DECL_EXTERNAL (target))
     *completep = false;
 }
 
@@ -2505,7 +2890,8 @@ maybe_record_node (vec <cgraph_node *> &nodes,
    for virtual function in. INSERTED tracks nodes we already
    inserted.
 
-   ANONYMOUS is true if BINFO is part of anonymous namespace.
+   POSSIBLY_INSTANTIATED is true if there might exist instance
+   of type.
 
    Clear COMPLETEP when we hit unreferable target.
   */
@@ -2521,7 +2907,7 @@ record_target_from_binfo (vec <cgraph_node *> &nodes,
 			  HOST_WIDE_INT offset,
 			  hash_set<tree> *inserted,
 			  hash_set<tree> *matched_vtables,
-			  bool anonymous,
+			  bool possibly_instantiated,
 			  bool *completep)
 {
   tree type = BINFO_TYPE (binfo);
@@ -2558,19 +2944,11 @@ record_target_from_binfo (vec <cgraph_node *> &nodes,
 	  gcc_assert (odr_violation_reported);
 	  return;
 	}
-      /* For types in anonymous namespace first check if the respective vtable
-	 is alive. If not, we know the type can't be called.  */
-      if (!flag_ltrans && anonymous)
-	{
-	  tree vtable = BINFO_VTABLE (inner_binfo);
-	  varpool_node *vnode;
+      /* For whole-program local types first check if the respective vtable is
+	 alive. If not, we know the type can't be called.  */
+      if (!possibly_instantiated)
+	return;
 
-	  if (TREE_CODE (vtable) == POINTER_PLUS_EXPR)
-	    vtable = TREE_OPERAND (TREE_OPERAND (vtable, 0), 0);
-	  vnode = varpool_node::get (vtable);
-	  if (!vnode || !vnode->definition)
-	    return;
-	}
       gcc_assert (inner_binfo);
       if (bases_to_consider
 	  ? !matched_vtables->contains (BINFO_VTABLE (inner_binfo))
@@ -2596,7 +2974,8 @@ record_target_from_binfo (vec <cgraph_node *> &nodes,
       record_target_from_binfo (nodes, bases_to_consider, base_binfo, otr_type,
 				type_binfos, 
 				otr_token, outer_type, offset, inserted,
-				matched_vtables, anonymous, completep);
+				matched_vtables, possibly_instantiated,
+				completep);
   if (BINFO_VTABLE (binfo))
     type_binfos.pop ();
 }
@@ -2627,7 +3006,7 @@ possible_polymorphic_call_targets_1 (vec <cgraph_node *> &nodes,
   tree binfo = TYPE_BINFO (type->type);
   unsigned int i;
   auto_vec <tree, 8> type_binfos;
-  bool possibly_instantiated = type_possibly_instantiated_p (type->type);
+  bool possibly_instantiated = type->possibly_instantiated_p ();
 
   /* We may need to consider types w/o instances because of possible derived
      types using their methods either directly or via construction vtables.
@@ -2638,12 +3017,12 @@ possible_polymorphic_call_targets_1 (vec <cgraph_node *> &nodes,
     {
       record_target_from_binfo (nodes,
 				(!possibly_instantiated
-				 && type_all_derivations_known_p (type->type))
+				 && type->all_derivations_known_p ())
 				? &bases_to_consider : NULL,
 				binfo, otr_type, type_binfos, otr_token,
 				outer_type, offset,
 				inserted, matched_vtables,
-				type->anonymous_namespace, completep);
+				possibly_instantiated, completep);
     }
   for (i = 0; i < type->derived_types.length (); i++)
     possible_polymorphic_call_targets_1 (nodes, inserted, 
@@ -2961,7 +3340,7 @@ devirt_variable_node_removal_hook (varpool_node *n,
 {
   if (cached_polymorphic_call_targets
       && DECL_VIRTUAL_P (n->decl)
-      && type_in_anonymous_namespace_p (DECL_CONTEXT (n->decl)))
+      && type_whole_program_local_p (DECL_CONTEXT (n->decl)))
     free_polymorphic_call_targets_hash ();
 }
 
@@ -3164,7 +3543,10 @@ possible_polymorphic_call_targets (tree otr_type,
       return (*slot)->targets;
     }
 
-  complete = true;
+  if (!flag_safe_vcall && !in_lto_p && !vcall_fixup_done)
+    complete = false;
+  else
+    complete = true;
 
   /* Do actual search.  */
   timevar_push (TV_IPA_VIRTUAL_CALL);
@@ -3203,10 +3585,11 @@ possible_polymorphic_call_targets (tree otr_type,
 	 to walk derivations.  */
       if (target && DECL_FINAL_P (target))
 	context.speculative_maybe_derived_type = false;
+
       if (check_derived_types
 	  ? type_or_derived_type_possibly_instantiated_p
 		 (speculative_outer_type)
-	  : type_possibly_instantiated_p (speculative_outer_type->type))
+	  : speculative_outer_type->possibly_instantiated_p ())
 	maybe_record_node (nodes, target, &inserted, can_refer,
 			   &speculation_complete);
       if (binfo)
@@ -3258,7 +3641,7 @@ possible_polymorphic_call_targets (tree otr_type,
       /* If OUTER_TYPE is abstract, we know we are not seeing its instance.  */
       if (check_derived_types
 	  ? type_or_derived_type_possibly_instantiated_p (outer_type)
-	  : type_possibly_instantiated_p (outer_type->type))
+	  : outer_type->possibly_instantiated_p ())
 	maybe_record_node (nodes, target, &inserted, can_refer, &complete);
       else
 	skipped = true;
@@ -3279,7 +3662,7 @@ possible_polymorphic_call_targets (tree otr_type,
 						 bases_to_consider,
 						 context.maybe_in_construction);
 
-	  if (!outer_type->all_derivations_known)
+	  if (!outer_type->all_derivations_known_p ())
 	    {
 	      if (!speculative && final_warning_records
 		  && nodes.length () == 1
@@ -3344,7 +3727,7 @@ possible_polymorphic_call_targets (tree otr_type,
 	      if (type != outer_type
 		  && (!skipped
 		      || (context.maybe_derived_type
-			  && !type_all_derivations_known_p (outer_type->type))))
+			  && !outer_type->all_derivations_known_p ())))
 		record_targets_from_bases (otr_type, otr_token, outer_type->type,
 					   context.offset, nodes, &inserted,
 					   &matched_vtables, &complete);
@@ -3490,7 +3873,6 @@ possible_polymorphic_call_target_p (tree otr_type,
     return true;
   return false;
 }
-
 
 
 /* Return true if N can be possibly target of a polymorphic call of
@@ -3957,6 +4339,251 @@ ipa_devirt (void)
   return ndevirtualized || ndropped ? TODO_remove_functions : 0;
 }
 
+static tree
+get_field_type (tree type, HOST_WIDE_INT offset)
+{
+  if (offset < 0)
+    return NULL_TREE;
+
+  while (TREE_CODE (type) == ARRAY_TYPE)
+    type = TREE_TYPE (type);
+
+  if (TREE_CODE (type) != RECORD_TYPE)
+    return NULL_TREE;
+
+  tree size = TYPE_SIZE_UNIT (type);
+
+  if (!size || TREE_CODE (size) != INTEGER_CST || !tree_fits_shwi_p (size))
+    return NULL_TREE;
+
+  if (tree_to_shwi (size) <= offset)
+    return NULL_TREE;
+
+  for (tree field = TYPE_FIELDS (type); field; field = DECL_CHAIN (field))
+    {
+      if (skip_in_fields_list_p (field))
+	continue;
+
+      offset_int field_offset = wi::to_offset (DECL_FIELD_OFFSET (field));
+
+      field_offset += wi::to_offset (DECL_FIELD_BIT_OFFSET (field))
+				     >> LOG2_BITS_PER_UNIT;
+
+      if (field_offset == offset)
+	return TREE_TYPE (field);
+
+      if (field_offset > offset)
+	break;
+    }
+
+  return NULL_TREE;
+}
+
+static void
+fixup_vcall (cgraph_edge *edge)
+{
+  tree call_fn = gimple_call_fn (edge->call_stmt);
+
+  if (!virtual_method_call_p (call_fn))
+    return;
+
+  tree otr_type = obj_type_ref_class (call_fn);
+  tree real_otr_type = otr_type;
+  unsigned token = tree_to_uhwi (OBJ_TYPE_REF_TOKEN (call_fn));
+  auto_vec<tree> worklist;
+  hash_set<tree> visited;
+
+  worklist.safe_push (OBJ_TYPE_REF_OBJECT (call_fn));
+
+  do
+    {
+      tree value = worklist.pop ();
+      tree type = NULL_TREE;
+
+      visited.add (value);
+
+      if (TREE_CODE (value) == ADDR_EXPR)
+	{
+	  HOST_WIDE_INT offset, size;
+	  bool reverse;
+	  tree base = get_ref_base_and_extent_hwi (TREE_OPERAND (value, 0),
+						   &offset, &size, &reverse);
+	  if (!base || (offset % BITS_PER_UNIT))
+	    continue;
+
+	  offset /= BITS_PER_UNIT;
+
+	  if (TREE_CODE (base) == MEM_REF
+	      && !integer_zerop (TREE_OPERAND (base, 1)))
+	    {
+	      if (!tree_fits_shwi_p (TREE_OPERAND (base, 1)))
+		continue;
+
+	      offset += tree_to_shwi (TREE_OPERAND (base, 1));
+	    }
+
+	  if (offset)
+	    type = get_field_type (TREE_TYPE (base), offset);
+	  else if (TREE_CODE (base) == MEM_REF)
+	    {
+	      value = TREE_OPERAND (base, 0);
+	      if (!visited.add (value))
+		worklist.safe_push (value);
+	    }
+	  else if (VAR_P (base))
+	    type = TREE_TYPE (base);
+	}
+      else if (TREE_CODE (value) == SSA_NAME)
+	{
+	  gimple *stmt = SSA_NAME_DEF_STMT (value);
+
+	  if (is_gimple_assign (stmt))
+	    {
+	      enum tree_code code = gimple_assign_rhs_code (stmt);
+	      tree rhs1 = gimple_assign_rhs1 (stmt);
+
+	      if (code == POINTER_PLUS_EXPR)
+		{
+		  tree rhs2 = gimple_assign_rhs2 (stmt);
+
+		  if (!tree_fits_shwi_p (rhs2))
+		    continue;
+
+		  HOST_WIDE_INT offset = tree_to_shwi (rhs2);
+
+		  if (offset)
+		    type = get_field_type (TREE_TYPE (TREE_TYPE (rhs1)), offset);
+		  else if (!visited.add (rhs1))
+		    worklist.safe_push (rhs1);
+		}
+	      else if (code == COND_EXPR || code == MAX_EXPR || code == MIN_EXPR)
+		{
+		  for (unsigned i = 1; i < 3; i++)
+		    {
+		      tree opnd = gimple_op (stmt, gimple_num_ops (stmt) - i);
+
+		      if (!visited.add (opnd))
+			worklist.safe_push (opnd);
+		    }
+		}
+	      else
+		{
+		  if (code == VIEW_CONVERT_EXPR)
+		    rhs1 = TREE_OPERAND (rhs1, 0);
+		  else if (gimple_assign_rhs_class (stmt) != GIMPLE_SINGLE_RHS
+			   && !CONVERT_EXPR_CODE_P (code))
+		    continue;
+
+		  if (POINTER_TYPE_P (TREE_TYPE (rhs1)) && !visited.add (rhs1))
+		    worklist.safe_push (rhs1);
+		}
+	    }
+	  else if (auto phi = dyn_cast<gphi *> (stmt))
+	    {
+	      for (unsigned i = 0; i < gimple_phi_num_args (phi); i++)
+		{
+		  tree arg = gimple_phi_arg_def (phi, i);
+
+		  if (!visited.add (arg))
+		    worklist.safe_push (arg);
+		}
+	    }
+	  else if (is_gimple_call (stmt))
+	    {
+	      tree fntype = gimple_call_fntype (stmt);
+
+	      if (!fntype)
+		continue;
+
+	      type = TREE_TYPE (fntype);
+
+	      if (!type || !POINTER_TYPE_P (type))
+		continue;
+
+	      type = TREE_TYPE (type);
+	    }
+
+	  if (!type)
+	    continue;
+
+	  while (TREE_CODE (type) == ARRAY_TYPE)
+	    type = TREE_TYPE (type);
+
+	  type = TYPE_MAIN_VARIANT (type);
+	  if (TYPE_CANONICAL (type))
+	    type = TYPE_CANONICAL (type);
+
+	  if (!RECORD_OR_UNION_TYPE_P (type) || !TYPE_BINFO (type)
+	      || !polymorphic_type_binfo_p (TYPE_BINFO (type)))
+	    continue;
+
+	  if (types_same_for_odr (real_otr_type, type))
+	    continue;
+
+	  for (tree inner_type = real_otr_type; ;)
+	    {
+	      tree field = TYPE_FIELDS (inner_type);
+
+	      if (!field || !DECL_ARTIFICIAL (field))
+		break;
+
+	      inner_type = TREE_TYPE (field);
+
+	      if (!RECORD_OR_UNION_TYPE_P (inner_type)
+		  || !TYPE_BINFO (inner_type)
+		  || !polymorphic_type_binfo_p (TYPE_BINFO (inner_type)))
+		break;
+
+	      if (types_same_for_odr (inner_type, type))
+		{
+		  if (gimple_get_virt_method_for_binfo (token,
+							TYPE_BINFO (type)))
+		    real_otr_type = type;
+		  break;
+		}
+	    }
+	}
+    } while (!worklist.is_empty ());
+
+  if (otr_type != real_otr_type)
+    {
+      tree fntype = TREE_TYPE (TREE_TYPE (call_fn));
+      unsigned quals = TYPE_QUALS (TYPE_METHOD_BASETYPE (fntype));
+      tree basetype = build_qualified_type (real_otr_type, quals);
+      tree rettype = TREE_TYPE (fntype);
+      tree argtypes = TREE_CHAIN (TYPE_ARG_TYPES (fntype));
+      tree new_fntype = build_method_type_directly (basetype, rettype,
+						    argtypes);
+
+      TREE_TYPE (call_fn) = build_pointer_type (new_fntype);
+      gimple_call_set_fntype (edge->call_stmt, new_fntype);
+
+      ipa_polymorphic_call_context context (edge->caller->decl, call_fn,
+					    edge->call_stmt);
+
+      edge->indirect_info->otr_type = real_otr_type;
+      edge->indirect_info->context = context;
+    }
+}
+
+static void
+ipa_devirt_fixup_vcall (void)
+{
+  cgraph_node *node;
+
+  if (flag_safe_vcall || !flag_generate_lto)
+    return;
+
+  FOR_EACH_FUNCTION_WITH_GIMPLE_BODY (node)
+    {
+      for (auto edge = node->indirect_calls; edge; edge = edge->next_callee)
+	fixup_vcall (edge);
+    }
+
+  vcall_fixup_done = true;
+  free_polymorphic_call_targets_hash ();
+}
+
 namespace {
 
 const pass_data pass_data_ipa_devirt =
@@ -3977,7 +4604,7 @@ class pass_ipa_devirt : public ipa_opt_pass_d
 public:
   pass_ipa_devirt (gcc::context *ctxt)
     : ipa_opt_pass_d (pass_data_ipa_devirt, ctxt,
-		      NULL, /* generate_summary */
+		      ipa_devirt_fixup_vcall, /* generate_summary */
 		      NULL, /* write_summary */
 		      NULL, /* read_summary */
 		      NULL, /* write_optimization_summary */
@@ -4012,6 +4639,1616 @@ ipa_opt_pass_d *
 make_pass_ipa_devirt (gcc::context *ctxt)
 {
   return new pass_ipa_devirt (ctxt);
+}
+
+#define WRAP_NEW_OP     ((void *) 1)
+#define WRAP_DELETE_OP  ((void *) 2)
+#define WRAP_THROW_OP   ((void *) 3)
+
+static inline bool
+node_is_wrapper_p (cgraph_node *node)
+{
+  if (node->aux == WRAP_NEW_OP
+      || node->aux == WRAP_DELETE_OP
+      || node->aux == WRAP_THROW_OP)
+    return true;
+
+  return false;
+}
+
+static inline bool
+call_has_name_p (gimple *stmt, const char *name)
+{
+  tree decl = gimple_call_fndecl (stmt);
+
+  return decl && id_equal (DECL_NAME (decl), name);
+}
+
+static bool
+decl_is_operator_new_p (tree decl)
+{
+  if (DECL_IS_OPERATOR_NEW_P (decl))
+    return true;
+
+  cgraph_node *node = cgraph_node::get (decl);
+
+  if (!node || !node->former_clone_of)
+    return false;
+
+ return DECL_IS_OPERATOR_NEW_P (node->former_clone_of);
+}
+
+static bool
+decl_is_operator_delete_p (tree decl)
+{
+  if (DECL_IS_OPERATOR_DELETE_P (decl))
+    return true;
+
+  cgraph_node *node = cgraph_node::get (decl);
+
+  if (!node || !node->former_clone_of)
+    return false;
+
+  return DECL_IS_OPERATOR_DELETE_P (node->former_clone_of);
+}
+
+/* Return the first call statement after function entry. If STRICT_P is NULL,
+   the call should be the first executable statement at function entry.
+   Otherwise, whether requirement was met is kept in *STRICT_P.  */
+
+static gimple *
+get_first_entry_call (bool *strict_p = NULL)
+{
+  tree default_vop = ssa_default_def (cfun, gimple_vop (cfun));
+  imm_use_iterator use_iter;
+  gimple *stmt;
+  gimple *call_stmt = NULL;
+
+  if (!default_vop)
+    return NULL;
+
+  if (strict_p)
+    *strict_p = true;
+
+  FOR_EACH_IMM_USE_STMT (stmt, use_iter, default_vop)
+    {
+      if (is_gimple_call (stmt))
+	{
+	  basic_block bb = gimple_bb (stmt);
+
+	  if (call_stmt)
+	    return NULL;
+
+	  call_stmt = stmt;
+
+	  if (single_pred_p (bb)
+	      && single_pred (bb) == ENTRY_BLOCK_PTR_FOR_FN (cfun))
+	    continue;
+	}
+      else if (is_gimple_debug (stmt))
+	continue;
+
+      if (!strict_p)
+	return NULL;
+
+      *strict_p = false;
+    }
+
+  return call_stmt;
+}
+
+/* Return true if STMT is a __cxa_allocate_exception, and a paired __cxa_throw
+   should exist in same basic block. Between these two calls there are
+   statements to construct an exception object.
+
+       exception_object = __cxa_allocate_exception (size);
+       ...
+       exception_object->ctor();
+       ...
+       __cxa_throw (exception_object, &exception::rtti, &exception::dtor);
+
+   As a whole, all these statements are mapped to one throw operation at the
+   source level.  */
+
+static bool
+stmt_starts_throw_operation_p (gimple *stmt, gimple **throw_stmt_ptr = NULL)
+{
+  if (gimple_call_num_args (stmt) != 1)
+    return false;
+
+  basic_block bb = gimple_bb (stmt);
+  gimple *throw_stmt = last_stmt (bb);
+
+  if (!is_gimple_call (throw_stmt)
+      || !(gimple_call_flags (throw_stmt) & ECF_NORETURN)
+      || !call_has_name_p (throw_stmt, "__cxa_throw")
+      || !call_has_name_p (stmt, "__cxa_allocate_exception"))
+    return false;
+
+  tree alloc_obj = gimple_call_lhs (stmt);
+  tree alloc_size = gimple_call_arg (stmt, 0);
+
+  if (!alloc_obj || TREE_CODE (alloc_obj) != SSA_NAME
+      || TREE_CODE (alloc_size) != INTEGER_CST)
+    return false;
+
+  if (gimple_call_num_args (throw_stmt) != 3)
+    return false;
+
+  if (alloc_obj != gimple_call_arg (throw_stmt, 0))
+    return false;
+
+  tree throw_rtti = gimple_call_arg (throw_stmt, 1);
+  tree throw_dtor = gimple_call_arg (throw_stmt, 2);
+
+  if (TREE_CODE (throw_rtti) != ADDR_EXPR
+      || TREE_CODE (throw_dtor) != ADDR_EXPR)
+    return false;
+
+  throw_rtti = TREE_OPERAND (throw_rtti, 0);
+  throw_dtor = TREE_OPERAND (throw_dtor, 0);
+
+  if (!VAR_P (throw_rtti) || TREE_CODE (throw_dtor) != FUNCTION_DECL)
+    return false;
+
+  if (!TREE_STATIC (throw_rtti) && !DECL_EXTERNAL (throw_rtti))
+    return false;
+
+  if (TREE_CODE (TREE_TYPE (throw_dtor)) != METHOD_TYPE)
+    return false;
+
+  gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
+
+
+  /* Check statements of constructing object to be thrown, and we only allow
+     memory stores to the object with constant value, which means object to
+     be thrown are invariant each time.  */
+  for (gsi_next (&gsi); ; gsi_next (&gsi))
+    {
+      gimple *ctor_stmt = gsi_stmt (gsi);
+
+      if (ctor_stmt == throw_stmt)
+	break;
+
+      if (!gimple_vdef (ctor_stmt))
+	continue;
+
+      if (!gimple_assign_single_p (ctor_stmt))
+	return false;
+
+      tree lhs = gimple_assign_lhs (ctor_stmt);
+      tree rhs = gimple_assign_rhs1 (ctor_stmt);
+
+      if (!TREE_CLOBBER_P (rhs))
+	{
+	  if (!is_gimple_ip_invariant (rhs))
+	    return false;
+
+	  if (gimple_has_volatile_ops (ctor_stmt))
+	    return false;
+	}
+
+      poly_int64 bitpos, bitsize, bitmaxsize;
+      bool reverse;
+      tree memref = get_ref_base_and_extent (lhs, &bitpos, &bitsize,
+					     &bitmaxsize, &reverse);
+
+      if (!memref || TREE_CODE (memref) != MEM_REF
+	  || TREE_OPERAND (memref, 0) != alloc_obj)
+	return false;
+
+      if (!known_size_p (bitmaxsize) || !known_eq (bitsize, bitmaxsize))
+	return false;
+
+      poly_offset_int offset
+	= wi::to_poly_offset (TREE_OPERAND (memref, 1)) << LOG2_BITS_PER_UNIT;
+      poly_int64 alloc_bits
+	= tree_to_poly_int64 (alloc_size) << LOG2_BITS_PER_UNIT;
+
+      /* Ensure memory store is inside the object to be thrown.  */
+      if (!known_subrange_p (offset + bitpos, bitsize, 0, alloc_bits))
+	return false;
+    }
+
+  if (throw_stmt_ptr)
+    *throw_stmt_ptr = throw_stmt;
+
+  return true;
+}
+
+/* Return true if current function is a wrapper over 'new' operator.  */
+
+static bool
+function_wraps_new_operator ()
+{
+  gimple *stmt = get_first_entry_call ();
+
+  if (!stmt)
+    return false;
+
+  tree fndecl = gimple_call_fndecl (stmt);
+
+  /* The first statement should be a call to 'new' operator.  */
+  if (!fndecl || !decl_is_operator_new_p (fndecl))
+    return false;
+
+  tree param = DECL_ARGUMENTS (cfun->decl);
+
+  if (!param || !DECL_CHAIN (param))
+    return false;
+
+  /* The first parameter is this pointer, and the second is size to
+     be allocated.  */
+  param = DECL_CHAIN (param);
+
+  if (!INTEGRAL_TYPE_P (TREE_TYPE (param)))
+    return false;
+
+  if (gimple_call_num_args (stmt) != 1
+      || gimple_call_arg (stmt, 0) != ssa_default_def (cfun, param))
+    return false;
+
+  tree alloc_addr = gimple_call_lhs (stmt);
+
+  if (TREE_CODE (alloc_addr) != SSA_NAME)
+    return false;
+
+  use_operand_p use;
+  gimple *use_stmt;
+
+  if (!single_imm_use (alloc_addr, &use, &use_stmt))
+    return false;
+
+  greturn *ret = dyn_cast <greturn *> (use_stmt);
+
+  if (!ret || gimple_return_retval (ret) != alloc_addr)
+    return false;
+
+  if (gimple_vuse (ret) != gimple_vdef (stmt))
+    return false;
+
+  basic_block bb = gimple_bb (stmt);
+  basic_block ret_bb = gimple_bb (ret);
+
+  /* If return and 'new' statements are in same basic block, there is no
+     exception handling code.  */
+  if (bb == ret_bb)
+    return true;
+
+  if (single_succ_p (bb))
+    return single_succ (bb) == ret_bb;
+
+  if (EDGE_COUNT (bb->succs) != 2)
+    return false;
+
+  /* There are two successor blocks, one is normal return, and the other
+     directs to exception handling code.  */
+  basic_block eh_bb = EDGE_SUCC (bb, 0)->dest;
+
+  if (eh_bb == ret_bb)
+    eh_bb = EDGE_SUCC (bb, 1)->dest;
+
+  imm_use_iterator use_iter;
+  gimple *catch_stmt = NULL;
+  gimple *catch_end_stmt;
+  gimple *throw_stmt;
+
+  FOR_EACH_IMM_USE_STMT (use_stmt, use_iter, gimple_vdef (stmt))
+    {
+      if (!is_gimple_call (use_stmt))
+	continue;
+
+      if (call_has_name_p (use_stmt, "__cxa_begin_catch"))
+	{
+	  catch_stmt = use_stmt;
+	  break;
+	}
+    }
+
+  if (!catch_stmt || gimple_call_num_args (catch_stmt) != 1)
+    return false;
+
+  tree eh_pointer = gimple_call_arg (catch_stmt, 0);
+
+  if (TREE_CODE (eh_pointer) != SSA_NAME)
+    return false;
+
+  gimple *eh_pointer_stmt = SSA_NAME_DEF_STMT (eh_pointer);
+
+  if (!gimple_call_builtin_p (eh_pointer_stmt, BUILT_IN_EH_POINTER))
+    return false;
+
+  basic_block catch_bb = gimple_bb (catch_stmt);
+
+  for (basic_block temp_bb = eh_bb; temp_bb != catch_bb; )
+    {
+      if (!single_succ_p (temp_bb))
+	return false;
+
+      temp_bb = single_succ (temp_bb);
+
+      if (!single_pred_p (temp_bb))
+	return false;
+    }
+
+  if (!single_imm_use (gimple_vdef (catch_stmt), &use, &throw_stmt)
+     || !is_gimple_call (throw_stmt))
+    return false;
+
+  /* Unconditionally rethrow an exception or throw a new exception.  */
+  if (call_has_name_p (throw_stmt, "__cxa_rethrow"))
+    {
+      if (!(gimple_call_flags (throw_stmt) & ECF_NORETURN)
+	  || gimple_call_num_args (throw_stmt))
+	return false;
+    }
+  else if (!stmt_starts_throw_operation_p (throw_stmt, &throw_stmt))
+    return false;
+
+  if (!single_imm_use (gimple_vdef (throw_stmt), &use, &catch_end_stmt)
+      || !is_gimple_call (catch_end_stmt))
+    return false;
+
+  if (!call_has_name_p (catch_end_stmt, "__cxa_end_catch"))
+    return false;
+
+  basic_block catch_end_bb = gimple_bb (catch_end_stmt);
+
+  if (!single_pred_p (catch_end_bb)
+      || single_pred (catch_end_bb) != catch_bb)
+    return false;
+
+  return true;
+}
+
+/* Return true if current function is a wrapper over 'delete' operator, without
+   or with a NULL pointer check as:
+
+  ;;   basic block 1
+    if (p_1(D) != 0B)
+      goto <bb 2>;
+    else
+      goto <bb 3>;
+
+  ;;   basic block 2
+    # .MEM_3 = VDEF <.MEM_2(D)>
+    operator delete [] (p_1(D));
+
+  ;;   basic block 3
+    # .MEM_4 = PHI <.MEM_2(D)(1), .MEM_3(2)>
+    # VUSE <.MEM_4>
+    return;
+*/
+
+static bool
+function_wraps_delete_operator ()
+{
+  bool simple;
+  gimple *del_stmt = get_first_entry_call (&simple);
+
+  if (!del_stmt)
+    return false;
+
+  tree fndecl = gimple_call_fndecl (del_stmt);
+
+  /* There is only one call to 'delete' operator.  */
+  if (!fndecl || !decl_is_operator_delete_p (fndecl))
+    return false;
+
+  tree param = DECL_ARGUMENTS (cfun->decl);
+
+  if (!param || !DECL_CHAIN (param))
+    return false;
+
+  /* The first parameter is this pointer, and the second is memory pointer to
+     be deleted.  */
+  param = ssa_default_def (cfun, DECL_CHAIN (param));
+  if (!param || !POINTER_TYPE_P (TREE_TYPE (param)))
+    return false;
+
+  /* Now only non-sized 'delete' operator is handled, which has one pointer
+     parameter.
+
+     TODO: support other variants, such as delete (void *ptr, size_t size).  */
+  if (gimple_call_num_args (del_stmt) != 1
+      || gimple_call_arg (del_stmt, 0) != param)
+    return false;
+
+  use_operand_p use;
+  gimple *use_stmt;
+  greturn *ret;
+  tree ret_vuse = gimple_vdef (del_stmt);
+
+  if (!simple)
+    {
+      basic_block del_bb = gimple_bb (del_stmt);
+
+      if (!single_pred_p (del_bb) || !single_succ_p (del_bb))
+	return false;
+
+      edge cmp_e = single_pred_edge (del_bb);
+      basic_block cmp_bb = cmp_e->src;
+
+      if (!single_pred_p (cmp_bb)
+	  || single_pred (cmp_bb) != ENTRY_BLOCK_PTR_FOR_FN (cfun))
+	return false;
+
+      gimple *cmp_stmt = last_stmt (cmp_bb);
+
+      if (!cmp_stmt || gimple_code (cmp_stmt) != GIMPLE_COND)
+	return false;
+
+      tree cmp_val = NULL_TREE;
+
+      if (gimple_cond_lhs (cmp_stmt) == param)
+	cmp_val = gimple_cond_rhs (cmp_stmt);
+      else if (gimple_cond_rhs (cmp_stmt) == param)
+	cmp_val = gimple_cond_lhs (cmp_stmt);
+
+      if (!cmp_val || !integer_zerop (cmp_val))
+	return false;
+
+      if (gimple_cond_code (cmp_stmt) == NE_EXPR)
+	{
+	  if (cmp_e->flags & EDGE_FALSE_VALUE)
+	    return false;
+	}
+      else if (gimple_cond_code (cmp_stmt) == EQ_EXPR)
+	{
+	  if (cmp_e->flags & EDGE_TRUE_VALUE)
+	    return false;
+	}
+      else
+	return false;
+
+      basic_block skip_bb;
+
+      if (EDGE_SUCC (cmp_bb, 0) == cmp_e)
+	skip_bb = EDGE_SUCC (cmp_bb, 1)->dest;
+      else
+	skip_bb = EDGE_SUCC (cmp_bb, 0)->dest;
+
+      if (skip_bb == single_succ (del_bb))
+	{
+	  if (!single_imm_use (gimple_vdef (del_stmt), &use, &use_stmt)
+	      || gimple_code (use_stmt) != GIMPLE_PHI)
+	    return false;
+
+	  ret_vuse = gimple_phi_result (use_stmt);
+	}
+      else if ((ret = safe_dyn_cast <greturn *> (last_stmt (skip_bb))))
+	{
+	  tree retval = gimple_return_retval (ret);
+
+	  /* Only void function or function with constant return value is
+	     allowed.  */
+	  if (retval && !is_gimple_ip_invariant (retval))
+	    return false;
+
+	  if (gimple_vuse (ret) != gimple_vuse (del_stmt))
+	    return false;
+	}
+      else
+	return false;
+    }
+
+  if (!single_imm_use (ret_vuse, &use, &use_stmt)
+      || gimple_bb (use_stmt) != gimple_bb (SSA_NAME_DEF_STMT (ret_vuse)))
+    return false;
+
+  if (!(ret = dyn_cast <greturn *> (use_stmt)))
+    return false;
+
+  tree retval = gimple_return_retval (ret);
+
+  /* Only void function or function with constant return value is allowed.  */
+  if (retval && !is_gimple_ip_invariant (retval))
+    return false;
+
+  return true;
+}
+
+/* Return true if current function always throw an invariant exception.  */
+
+static bool
+function_only_throws_exception ()
+{
+  gimple *stmt = get_first_entry_call ();
+
+  if (!stmt || !stmt_starts_throw_operation_p (stmt))
+    return false;
+
+  return true;
+}
+
+/* Function type map for 'new'/'delete' vcall.  */
+static hash_map<tree, tree> *fntype_map[2];
+
+static bool
+annotate_vcall_wrapper (gimple *call_stmt, auto_vec<cgraph_node *> &targets)
+{
+  bool is_new = false;
+  bool is_delete = false;
+  cgraph_node *target;
+  unsigned i;
+
+  FOR_EACH_VEC_ELT (targets, i, target)
+    {
+      if (!target->aux)
+	return false;
+
+      if (target->aux == WRAP_NEW_OP)
+	is_new = true;
+      else if (target->aux == WRAP_DELETE_OP)
+	is_delete = true;
+      else if (target->aux != WRAP_THROW_OP)
+	return false;
+    }
+
+  if (is_new == is_delete)
+   return false;
+
+  if (!fntype_map[is_new])
+    fntype_map[is_new] = new hash_map <tree, tree> ();
+
+  bool existed_p;
+  tree orig_fntype = gimple_call_fntype (call_stmt);
+  tree &fntype = fntype_map[is_new]->get_or_insert (orig_fntype, &existed_p);
+  const char *fntype_attr = is_new ? "cxx_new" : "cxx_delete";
+  if (!existed_p)
+    {
+      fntype = build_distinct_type_copy (orig_fntype);
+      TYPE_ATTRIBUTES (fntype) = tree_cons (get_identifier (fntype_attr),
+					    NULL_TREE,
+					    TYPE_ATTRIBUTES (fntype));
+    }
+
+  gimple_call_set_fntype (as_a<gcall *> (call_stmt), fntype);
+
+  if (dump_file)
+    {
+      fprintf (dump_file, "\n  Mark the call as %s: ", fntype_attr);
+      print_gimple_stmt (dump_file, call_stmt, 0);
+    }
+
+  return true;
+}
+
+static inline bool
+contains_value_p (vec<tree> &values, tree value)
+{
+  unsigned i;
+  tree value_in;
+
+  FOR_EACH_VEC_ELT (values, i, value_in)
+    if (operand_equal_p (value, value_in))
+      return true;
+
+  return false;
+}
+
+static auto_vec<tree> *
+get_return_constant_values ()
+{
+  tree ret_type = TREE_TYPE (TREE_TYPE (cfun->decl));
+
+  /* It is meaningless to optimize vcall with bool return type, which only has
+     two values.  */
+  if (TREE_CODE (ret_type) == BOOLEAN_TYPE)
+    return NULL;
+
+  if (!INTEGRAL_TYPE_P (ret_type) && !POINTER_TYPE_P (ret_type))
+    return NULL;
+
+  edge e;
+  edge_iterator ei;
+  auto_vec<tree> values;
+
+  FOR_EACH_EDGE (e, ei, EXIT_BLOCK_PTR_FOR_FN (cfun)->preds)
+    {
+      greturn *ret = safe_dyn_cast<greturn *> (last_stmt (e->src));
+
+      if (!ret)
+	return NULL;
+
+      tree retval = gimple_return_retval (ret);
+
+      if (!retval || !is_gimple_ip_invariant (retval))
+	return NULL;
+
+      if (!contains_value_p (values, retval))
+	values.safe_push (retval);
+    }
+
+  if (values.is_empty ())
+    return NULL;
+
+  auto_vec<tree> *values_ptr = new auto_vec<tree> ();
+
+  values_ptr->safe_splice (values);
+  return values_ptr;
+}
+
+static cgraph_node *
+match_node_by_retval (auto_vec<cgraph_node *> &targets, tree value)
+{
+  unsigned i;
+  cgraph_node *target;
+  cgraph_node *node = NULL;
+
+  FOR_EACH_VEC_ELT (targets, i, target)
+    {
+      cgraph_node *alias_target = target->ultimate_alias_target ();
+      vec<tree> &values = *(auto_vec<tree> *) alias_target->aux;
+
+      if (contains_value_p (values, value))
+	{
+	  if (node || values.length () > 1)
+	    return NULL;
+
+	  node = target;
+	}
+    }
+
+  return node;
+}
+
+static tree
+build_vtable_addr_expr (tree vtable, unsigned HOST_WIDE_INT offset)
+{
+  tree type = TREE_TYPE (vtable);
+
+  gcc_checking_assert (TREE_CODE (type) == ARRAY_TYPE);
+  gcc_checking_assert (DECL_VIRTUAL_P (vtable) && VAR_P (vtable));
+
+  vtable = build1 (ADDR_EXPR, build_pointer_type (type), vtable);
+  vtable = build2 (MEM_REF, type, vtable,
+		   build_int_cst (ptr_type_node, offset));
+
+  return build1 (ADDR_EXPR, build_pointer_type (type), vtable);
+}
+
+static tree
+get_single_vtable (cgraph_node *node, tree otr_expr)
+{
+  tree vtable = NULL_TREE;
+  unsigned HOST_WIDE_INT offset = 0;
+  unsigned HOST_WIDE_INT token = tree_to_uhwi (OBJ_TYPE_REF_TOKEN (otr_expr));
+  ipa_ref *ref;
+
+  gcc_checking_assert (DECL_VIRTUAL_P (node->decl));
+
+  for (unsigned i = 0; node->iterate_referring (i, ref); i++)
+    {
+      symtab_node *referring = ref->referring;
+
+      /* Alias function may belong to a sole class that has no
+	 inheritance relation with the class to checked, but we
+	 also ignore that.  */
+      if (ref->use == IPA_REF_ALIAS)
+	return NULL_TREE;
+
+      if (ref->use == IPA_REF_ADDR && VAR_P (referring->decl)
+	  && DECL_VIRTUAL_P (referring->decl))
+	{
+	  if (vtable)
+	    return NULL_TREE;
+
+	  tree init = ctor_for_folding (referring->decl);
+	  tree val;
+	  unsigned j;
+
+	  if (!init || init == error_mark_node)
+	    return NULL_TREE;
+
+	  FOR_EACH_CONSTRUCTOR_VALUE (CONSTRUCTOR_ELTS (init), j, val)
+	    {
+	      if (TREE_CODE (val) == ADDR_EXPR
+		  && TREE_OPERAND (val, 0) == node->decl)
+		break;
+	    }
+
+	  /* In theory, we should always find a slot in vtable for the
+	     function.  But probably user can construct an ill-form
+	     program to violate this?  */
+	  if (j >= CONSTRUCTOR_NELTS (init) || j < token)
+	    return NULL_TREE;
+
+	  vtable = referring->decl;
+	  offset = (j - token) * POINTER_SIZE_UNITS;
+	}
+    }
+
+  gcc_assert (vtable);
+
+  return build_vtable_addr_expr (vtable, offset);
+}
+
+static tree
+get_vtable_from_otr_expr (tree otr_expr)
+{
+  tree fn_ptr = OBJ_TYPE_REF_EXPR (otr_expr);
+  tree fn_token = OBJ_TYPE_REF_TOKEN (otr_expr);
+  gimple *fn_stmt = SSA_NAME_DEF_STMT (fn_ptr);
+
+  if (!gimple_assign_load_p (fn_stmt))
+    return NULL_TREE;
+
+  tree memref = gimple_assign_rhs1 (fn_stmt);
+
+  if (TREE_CODE (memref) != MEM_REF)
+    return NULL_TREE;
+
+  tree offset = TREE_OPERAND (memref, 1);
+
+  if (!tree_fits_uhwi_p (offset))
+    return NULL_TREE;
+
+  if (tree_to_uhwi (offset) != (tree_to_uhwi (fn_token) * POINTER_SIZE_UNITS))
+    return NULL_TREE;
+
+  return TREE_OPERAND (memref, 0);
+}
+
+static void
+copy_arg_for_phi_nodes (edge_def *old_e, edge_def *new_e)
+{
+  for (gphi_iterator gsi = gsi_start_phis (old_e->dest); !gsi_end_p (gsi);
+       gsi_next (&gsi))
+   {
+      gphi *phi = gsi.phi ();
+      tree def = PHI_ARG_DEF_FROM_EDGE (phi, old_e);
+
+      add_phi_arg (phi, unshare_expr (def), new_e,
+		   gimple_phi_arg_location_from_edge (phi, old_e));
+   }
+}
+
+static bool
+devirtualize_call_for_condition (gimple *call_stmt,
+				 auto_vec<cgraph_node *> &targets,
+				 bool cmp_vtable)
+{
+  tree call_lhs = gimple_call_lhs (call_stmt);
+
+  /* A const/pure virtual call without lhs has no side effect, could be
+     removed. */
+  if (!call_lhs)
+    {
+      if (dump_file)
+	{
+	  fprintf (dump_file, "\n  Remove dead call:\n  * ");
+	  print_gimple_stmt (dump_file, call_stmt, 0);
+	}
+      return true;
+    }
+
+  if (TREE_CODE (call_lhs) != SSA_NAME)
+    return false;
+
+  unsigned i;
+  gimple *use_stmt;
+  imm_use_iterator use_iter;
+  cgraph_node *target;
+  auto_vec<cgraph_node *> final_targets;
+
+  FOR_EACH_VEC_ELT (targets, i, target)
+    {
+      if (!target->aux || node_is_wrapper_p (target))
+	return false;
+    }
+
+  /* TODO: return value of call might be converted to other type, for example,
+     char type index of switch statement will be promoted to int type.  */
+  FOR_EACH_IMM_USE_STMT (use_stmt, use_iter, call_lhs)
+    {
+      if (gimple_code (use_stmt) == GIMPLE_COND)
+	{
+	  enum tree_code cmp_code = gimple_cond_code (use_stmt);
+
+	  if (cmp_code != NE_EXPR && cmp_code != EQ_EXPR)
+	    return false;
+
+	  tree cmp_expr = gimple_cond_rhs (use_stmt);
+
+	  if (gimple_cond_lhs (use_stmt) == call_lhs)
+	    cmp_expr = gimple_cond_rhs (use_stmt);
+	  else if (gimple_cond_rhs (use_stmt) == call_lhs)
+	    cmp_expr = gimple_cond_lhs (use_stmt);
+	  else
+	    return false;
+
+	  if (!is_gimple_ip_invariant (cmp_expr))
+	    return false;
+
+	  cgraph_node *call_node = match_node_by_retval (targets, cmp_expr);
+
+	  if (!call_node)
+	    return false;
+
+	  final_targets.safe_push (call_node);
+	}
+      else if (gimple_code (use_stmt) == GIMPLE_SWITCH)
+	{
+	  gswitch *switch_stmt = as_a <gswitch *> (use_stmt);
+
+	  if (gimple_switch_index (switch_stmt) != call_lhs)
+	    return false;
+
+	  /* TODO: devirtualization will expand switch to if-statements,
+	     which might break some optimizations for certian switch patterns,
+	     such as jump table generation.  */
+	  for (i = 1; i < gimple_switch_num_labels (switch_stmt); ++i)
+	    {
+	      tree cl = gimple_switch_label (switch_stmt, i);
+	      tree min = CASE_LOW (cl);
+	      tree max = CASE_HIGH (cl);
+
+	      /* TODO: same target with multiple continuous cases.  */
+	      if (max)
+		return false;
+
+	      if (TREE_TYPE (min) != TREE_TYPE (call_lhs))
+		min = wide_int_to_tree (TREE_TYPE (call_lhs),
+					wi::to_wide (min));
+
+	      cgraph_node *call_node = match_node_by_retval (targets, min);
+
+	      if (!call_node)
+		return false;
+
+	      final_targets.safe_push (call_node);
+	    }
+	}
+      else if (!is_gimple_debug (use_stmt))
+	return false;
+    }
+
+  auto_vec<tree> addr_consts;
+  tree call_fn = gimple_call_fn (call_stmt);
+  tree addr_expr;
+  unsigned target_pos = 0;
+
+  if (cmp_vtable)
+    {
+      FOR_EACH_VEC_ELT (final_targets, i, target)
+	{
+	  tree vtable = get_single_vtable (target, call_fn);
+
+	  if (!vtable)
+	    {
+	      cmp_vtable = false;
+	      addr_consts.truncate (0);
+	      break;
+	    }
+
+	  addr_consts.safe_push (vtable);
+	}
+
+      if (cmp_vtable
+	  && !(addr_expr = get_vtable_from_otr_expr (call_fn)))
+	{
+	  cmp_vtable = false;
+	  addr_consts.truncate (0);
+	}
+    }
+
+  if (!cmp_vtable)
+    {
+      FOR_EACH_VEC_ELT (final_targets, i, target)
+	{
+	  tree target_addr
+		= build1 (ADDR_EXPR,
+			  build_pointer_type (TREE_TYPE (target->decl)),
+			  target->decl);
+
+	  addr_consts.safe_push (target_addr);
+	}
+
+      addr_expr = make_temp_ssa_name (TREE_TYPE (call_fn), NULL, "vcall_addr");
+      gimple *load_stmt = gimple_build_assign (addr_expr,
+					       unshare_expr (call_fn));
+
+      gimple_stmt_iterator gsi = gsi_for_stmt (call_stmt);
+      gsi_insert_before (&gsi, load_stmt, GSI_SAME_STMT);
+    }
+
+  if (dump_file)
+    {
+      tree fn_ptr = OBJ_TYPE_REF_EXPR (call_fn);
+      gimple *fn_stmt = SSA_NAME_DEF_STMT (fn_ptr);
+
+      fprintf (dump_file, "\n  Rewrite used-by-condition call:\n  * ");
+      print_gimple_stmt (dump_file, fn_stmt, 0);
+      fprintf (dump_file, "  * ");
+      print_gimple_stmt (dump_file, call_stmt, 0);
+    }
+
+  FOR_EACH_IMM_USE_STMT (use_stmt, use_iter, call_lhs)
+    {
+      if (gimple_code (use_stmt) == GIMPLE_COND)
+	{
+	  gcond *cond_stmt = as_a <gcond *> (use_stmt);
+
+	  if (dump_file)
+	    {
+	      fprintf (dump_file, "  condition ");
+	      print_gimple_expr (dump_file, cond_stmt, 0);
+	    }
+
+	  gimple_cond_set_lhs (cond_stmt, addr_expr);
+	  gimple_cond_set_rhs (cond_stmt, addr_consts [target_pos++]);
+	  update_stmt (use_stmt);
+
+	  if (dump_file)
+	    {
+	      cgraph_node *target = final_targets[target_pos - 1];
+
+	      fprintf (dump_file, "  ->  ");
+	      print_gimple_expr (dump_file, cond_stmt, 0);
+	      if (cmp_vtable)
+		fprintf (dump_file, " (vtable of ");
+	      else
+		fprintf (dump_file, "/%d (", target->order);
+	      print_generic_expr (dump_file, DECL_CONTEXT (target->decl));
+	      fprintf (dump_file, ")\n");
+	    }
+	}
+      else if (gimple_code (use_stmt) == GIMPLE_SWITCH)
+	{
+	  gimple_stmt_iterator gsi = gsi_for_stmt (use_stmt);
+	  edge_def *link_e = split_block (gimple_bb (use_stmt),
+				(gsi_prev_nondebug (&gsi), gsi_stmt (gsi)));
+	  profile_probability total_prob = profile_probability::always ();
+	  gswitch *switch_stmt = as_a <gswitch *> (use_stmt);
+
+	  for (i = 1; i < gimple_switch_num_labels (switch_stmt); ++i)
+	    {
+	      gcond *cmp_stmt = gimple_build_cond (EQ_EXPR, addr_expr,
+						   addr_consts[target_pos++],
+						   NULL_TREE, NULL_TREE);
+	      basic_block cmp_bb = split_edge (link_e);
+
+	      link_e = single_succ_edge (cmp_bb);
+	      gsi = gsi_start_bb (cmp_bb);
+	      gsi_insert_after (&gsi, cmp_stmt, GSI_NEW_STMT);
+
+	      edge_def *case_e = gimple_switch_edge (cfun, switch_stmt, i);
+	      edge_def *true_e = make_edge (cmp_bb, case_e->dest,
+					    EDGE_TRUE_VALUE);
+
+	      copy_arg_for_phi_nodes (case_e, true_e);
+	      true_e->probability = case_e->probability / total_prob;
+	      link_e->flags &= ~EDGE_FALLTHRU;
+	      link_e->flags |= EDGE_FALSE_VALUE;
+	      link_e->probability = true_e->probability.invert ();
+	      total_prob -= case_e->probability;
+
+	      if (dump_file)
+		{
+		  tree cl = gimple_switch_label (switch_stmt, i);
+		  cgraph_node *target = final_targets[target_pos - 1];
+
+		  fprintf (dump_file, "  switch(");
+		  print_generic_expr (dump_file, call_lhs);
+		  fprintf (dump_file, ") case ");
+		  print_generic_expr (dump_file, CASE_LOW (cl));
+		  fprintf (dump_file, ":  ->  ");
+		  print_gimple_expr (dump_file, cmp_stmt, 0);
+		  if (cmp_vtable)
+		    fprintf (dump_file, " (vtable of ");
+		  else
+		    fprintf (dump_file, "/%d (", target->order);
+		  print_generic_expr (dump_file, DECL_CONTEXT (target->decl));
+		  fprintf (dump_file, ")\n");
+		}
+	    }
+
+	  edge_def *default_e = gimple_switch_default_edge (cfun, switch_stmt);
+
+	  redirect_edge_succ (link_e, default_e->dest);
+	  copy_arg_for_phi_nodes (default_e, link_e);
+	  delete_basic_block (gimple_bb (use_stmt));
+	}
+      else
+	{
+	  gimple_stmt_iterator gsi = gsi_for_stmt (use_stmt);
+
+	  gcc_checking_assert (is_gimple_debug (use_stmt));
+	  gsi_remove (&gsi, true);
+	}
+    }
+
+  return true;
+}
+
+static bool
+post_devirtualize_vcall (cgraph_edge *edge)
+{
+  unsigned i;
+  void *cache_token;
+  bool complete;
+  int call_flags = -1;
+  gcall *call_stmt = edge->call_stmt;
+  cgraph_node *target;
+  auto_vec<cgraph_node *> targets;
+  vec<cgraph_node *> cache_targets
+	= possible_polymorphic_call_targets (edge, &complete, &cache_token);
+
+  if (!complete || cache_targets.is_empty ())
+    return false;
+
+  FOR_EACH_VEC_ELT (cache_targets, i, target)
+    {
+      if (is_cxa_pure_virtual_p (target->decl))
+	return false;
+
+      if (target->get_availability () <= AVAIL_INTERPOSABLE)
+	return false;
+
+      target = target->ultimate_alias_target ();
+
+      if (!targets.contains (target))
+	{
+	  int decl_flags = flags_from_decl_or_type (target->decl);
+
+	  /* We enforce a stricker check on const/pure indirect function
+	     since there is no more bits in gcall to represent
+	     LOOPING_CONST_OR_PURE.  */
+	  if (decl_flags & ECF_LOOPING_CONST_OR_PURE)
+	    decl_flags &= ~(ECF_CONST | ECF_PURE);
+
+	  call_flags &= decl_flags;
+	  targets.safe_push (target);
+	}
+    }
+
+  if (call_flags & (ECF_PURE | ECF_CONST))
+    {
+      bool cmp_vtable = targets.length () == cache_targets.length ();
+
+      if (devirtualize_call_for_condition (call_stmt, targets, cmp_vtable))
+	{
+	  gimple_stmt_iterator gsi = gsi_for_stmt (call_stmt);
+	  basic_block call_bb = gimple_bb (call_stmt);
+
+	  unlink_stmt_vdef (call_stmt);
+	  /* Record basic block before gsi_remove, since it will be cleared.  */
+	  if (gsi_remove (&gsi, true))
+	    gimple_purge_dead_eh_edges (call_bb);
+	  release_defs (call_stmt);
+	  cgraph_edge::remove (edge);
+	  return true;
+	}
+    }
+  else
+    annotate_vcall_wrapper (call_stmt, targets);
+
+  bool changed = false;
+
+  if (call_flags & ECF_NOTHROW)
+    {
+      gimple_call_set_nothrow (call_stmt, true);
+
+      if (maybe_clean_eh_stmt (call_stmt))
+	changed = gimple_purge_dead_eh_edges (gimple_bb (call_stmt));
+    }
+
+  /* An indirect function is const when its function address is not changed,
+     it behavior is just like a pure function.  */
+  if (call_flags & ECF_CONST)
+    gimple_call_set_const (call_stmt, true);
+  else if (call_flags & ECF_PURE)
+    gimple_call_set_pure (call_stmt, true);
+
+  if (call_flags & (ECF_CONST | ECF_PURE))
+    update_stmt (call_stmt);
+
+  return changed;
+}
+
+static void
+analyze_virtual_function (cgraph_node *node)
+{
+  cfun_context context (node);
+
+  if (function_wraps_new_operator ())
+    node->aux = WRAP_NEW_OP;
+  else if (function_wraps_delete_operator ())
+    node->aux = WRAP_DELETE_OP;
+  else if (function_only_throws_exception ())
+    node->aux = WRAP_THROW_OP;
+  else if (flags_from_decl_or_type (node->decl) & (ECF_PURE | ECF_CONST))
+    node->aux = get_return_constant_values ();
+}
+
+static hash_map<tree, odr_type> *typeinfo_map;
+
+static void
+init_typeinfo_map ()
+{
+  typeinfo_map = new hash_map<tree, odr_type> ();
+
+  gcc_assert (odr_types_ptr);
+
+  for (unsigned i = 0; i < odr_types.length (); i++)
+    {
+      odr_type type = odr_types[i];
+
+      if (!type || !RECORD_OR_UNION_TYPE_P (type->type))
+	continue;
+
+      tree vtbl = get_type_vtable (type->type);
+
+      if (!vtbl)
+	continue;
+
+      if (tree typeinfo = extract_typeinfo_in_vtable (vtbl))
+	typeinfo_map->put (typeinfo, type);
+    }
+}
+
+static odr_type
+class_for_typeinfo (tree typeinfo)
+{
+  if (!typeinfo_map)
+    init_typeinfo_map ();
+
+  odr_type *type = typeinfo_map->get (typeinfo);
+
+  if (!type)
+    return NULL;
+  return *type;
+}
+
+/* Rewrite an invalid dynamic_cast to a NULL pointer assignment.  */
+
+static void
+nullify_dynamic_cast (cgraph_edge *edge)
+{
+  gimple *call_stmt = edge->call_stmt;
+  gimple_stmt_iterator gsi = gsi_for_stmt (call_stmt);
+  tree dst_ptr = gimple_call_lhs (call_stmt);
+  gimple *new_stmt
+	= gimple_build_assign (dst_ptr, build_zero_cst (TREE_TYPE (dst_ptr)));
+
+  gsi_insert_before (&gsi, new_stmt, GSI_SAME_STMT);
+  unlink_stmt_vdef (call_stmt);
+  gsi_remove (&gsi, true);
+  cgraph_edge::remove (edge);
+}
+
+static bool
+compare_null_stmt_p (gcond *stmt, tree name, edge &e_good, edge &e_null)
+{
+  if (gimple_code (stmt) != GIMPLE_COND)
+    return false;
+
+  tree opnd0 = gimple_cond_lhs (stmt);
+  tree opnd1 = gimple_cond_rhs (stmt);
+
+  if ((opnd0 != name || !integer_zerop (opnd1))
+      && (opnd1 != name || !integer_zerop (opnd0)))
+    return false;
+
+  enum tree_code code = gimple_cond_code (stmt);
+
+  if (code != EQ_EXPR && code != NE_EXPR)
+    return false;
+
+  basic_block bb = gimple_bb (stmt);
+
+  e_good = EDGE_SUCC (bb, 0);
+  e_null = EDGE_SUCC (bb, 1);
+
+  if ((code == EQ_EXPR) ^ !(e_good->flags & EDGE_TRUE_VALUE))
+    std::swap (e_good, e_null);
+
+  return true;
+}
+
+static bool
+optimize_dynamic_cast (cgraph_edge *edge)
+{
+  gcall *call_stmt = edge->call_stmt;
+
+  if (gimple_call_num_args (call_stmt) != 4)
+    return false;
+
+  tree dst_ti = gimple_call_arg (call_stmt, 2);
+
+  if (TREE_CODE (dst_ti) != ADDR_EXPR)
+    return false;
+
+  dst_ti = TREE_OPERAND (dst_ti, 0);
+
+  if (!VAR_P (dst_ti))
+    return false;
+
+  tree src_ptr = gimple_call_arg (call_stmt, 0);
+  tree dst_ptr = gimple_call_lhs (call_stmt);
+  tree hint = gimple_call_arg (call_stmt, 3);
+
+  if (!dst_ptr)
+    return false;
+
+  basic_block call_bb = gimple_bb (call_stmt);
+
+  if (last_stmt (call_bb) == call_stmt && !single_succ_p (call_bb))
+    return false;
+
+  /* TODO: Result may be saved to a variable.  */
+  if (TREE_CODE (dst_ptr) != SSA_NAME)
+    return false;
+
+  if (TREE_CODE (hint) != INTEGER_CST || int_cst_value (hint))
+    return false;
+
+  tree res_type = TREE_TYPE (dst_ptr);
+
+  if (!POINTER_TYPE_P (res_type))
+    return false;
+
+  odr_type dst_type = class_for_typeinfo (dst_ti);
+
+  if (!dst_type || !TYPE_CXX_LOCAL (dst_type->type))
+    return false;
+
+  odr_type type_to_compare = NULL;
+
+  if (!TYPE_FINAL_P (dst_type->type))
+    {
+      auto_vec<odr_type> worklist;
+
+      worklist.safe_push (dst_type);
+      do
+	{
+	  odr_type type = worklist.pop ();
+	  odr_type derived;
+	  unsigned i;
+
+	  /* Skip class type that is never instantiated.  */
+	  if (varpool_node::get (get_type_vtable (type->type)))
+	    {
+	      if (type_to_compare)
+		return false;
+
+	      /* Ensure dst_type is the first ancestor base of this type so
+		 that cast offset is zero.  */
+	      for (odr_type base = type; base != dst_type; )
+		{
+		  if (base->bases.is_empty () || base->has_virtual_base
+		      || !TYPE_CXX_LOCAL (base->type))
+		    return false;
+
+		  base = base->bases[0];
+		}
+	      type_to_compare = type;
+	    }
+
+	  FOR_EACH_VEC_ELT (type->derived_types, i, derived)
+	    worklist.safe_push (derived);
+	} while (!worklist.is_empty ());
+    }
+  else if (varpool_node::get (get_type_vtable (dst_type->type)))
+    type_to_compare = dst_type;
+
+  if (!type_to_compare)
+    {
+      nullify_dynamic_cast (edge);
+      return true;
+    }
+
+  gimple_stmt_iterator gsi = gsi_for_stmt (call_stmt);
+  tree src_ptr_type = TREE_TYPE (src_ptr);
+  tree src_type = TREE_TYPE (src_ptr_type);
+  tree src_vtbl = NULL_TREE;
+  tree dst_vtbl;
+  unsigned HOST_WIDE_INT offset;
+
+  calculate_dominance_info (CDI_DOMINATORS);
+
+  if (TREE_CODE (src_type) == RECORD_TYPE)
+    {
+      if (!COMPLETE_TYPE_P (src_type) && odr_type_p (src_type))
+	src_type = prevailing_odr_type (src_type);
+
+      for (tree field = TYPE_FIELDS (src_type); field; )
+	{
+	  tree field_type = TREE_TYPE (field);
+
+	  /* Try to compose load vptr based on class type of source object
+	     if type information is available.  */
+	  if (DECL_VIRTUAL_P (field))
+	    {
+	      tree mref_type = build_qualified_type (DECL_CONTEXT (field),
+						     TYPE_QUAL_CONST);
+	      gcc_assert (POINTER_TYPE_P (field_type));
+
+	      if (TREE_CODE (src_ptr_type) == POINTER_TYPE)
+		mref_type = build_pointer_type (mref_type);
+	      else
+		mref_type = build_reference_type (mref_type);
+
+	      src_vtbl = build2 (MEM_REF, TREE_TYPE (mref_type), src_ptr,
+				 build_zero_cst (mref_type));
+	      src_vtbl = build3 (COMPONENT_REF, TREE_TYPE (field), src_vtbl,
+				 field, NULL_TREE);
+	      break;
+	    }
+
+	  if (!DECL_ARTIFICIAL (field) || TREE_CODE (field_type) != RECORD_TYPE)
+	    break;
+
+	  field = TYPE_FIELDS (field_type);
+	}
+    }
+
+  if (!src_vtbl)
+    src_vtbl = build2 (MEM_REF, ptr_type_node, src_ptr,
+		       build_zero_cst (build_pointer_type (ptr_type_node)));
+
+  src_vtbl = force_gimple_operand_gsi (&gsi, src_vtbl, true, NULL, true,
+				       GSI_SAME_STMT);
+
+  dst_vtbl = BINFO_VTABLE (TYPE_BINFO (type_to_compare->type));
+
+  if (vtable_pointer_value_to_vtable (dst_vtbl, &dst_vtbl, &offset))
+    dst_vtbl = build_vtable_addr_expr (dst_vtbl, offset);
+  else
+    {
+      dst_vtbl = unshare_expr_without_location (dst_vtbl);
+      dst_vtbl = force_gimple_operand_gsi (&gsi, dst_vtbl, true, NULL, true,
+					   GSI_SAME_STMT);
+    }
+
+  gcond *cond_stmt = dyn_cast <gcond *> (last_stmt (call_bb));
+  edge_def *e_cast;
+  edge_def *e_fail;
+
+  if (!param_dyncast_non_null_prob && cond_stmt
+      && compare_null_stmt_p (cond_stmt, dst_ptr, e_cast, e_fail))
+    {
+      gimple *use_stmt;
+      imm_use_iterator imm_iter;
+      basic_block cast_bb = e_cast->dest;
+
+      if (phi_nodes (cast_bb) || !single_pred_p (cast_bb))
+	cast_bb = split_edge (e_cast);
+
+      FOR_EACH_IMM_USE_STMT (use_stmt, imm_iter, dst_ptr)
+	{
+	  if (use_stmt == cond_stmt || is_gimple_debug (use_stmt))
+	    continue;
+
+	  if (dominated_by_p (CDI_DOMINATORS, gimple_bb (use_stmt), cast_bb))
+	    continue;
+
+	  if (gphi *phi = dyn_cast <gphi *> (use_stmt))
+	    {
+	      for (unsigned i = 0; i < gimple_phi_num_args (phi); i++)
+		{
+		  if (dst_ptr != gimple_phi_arg_def (phi, i))
+		    continue;
+
+		  edge_def *e_arg = gimple_phi_arg_edge (phi, i);
+
+		  if (!dominated_by_p (CDI_DOMINATORS, e_arg->src, cast_bb))
+		    goto not_dom;
+		}
+	      continue;
+	    }
+
+	not_dom:
+	  cond_stmt = NULL;
+	  break;
+	}
+    }
+  else
+    cond_stmt = NULL;
+
+  if (cond_stmt)
+    {
+      enum tree_code code = gimple_cond_code (cond_stmt);
+
+      gimple_cond_set_lhs (cond_stmt, src_vtbl);
+      gimple_cond_set_rhs (cond_stmt, dst_vtbl);
+      gimple_cond_set_code (cond_stmt, invert_tree_comparison (code, false));
+      update_stmt (cond_stmt);
+
+      gsi = gsi_after_labels (e_cast->dest);
+    }
+  else if (param_dyncast_non_null_prob)
+    {
+      gimple *cmp_vtbl = gimple_build_cond (EQ_EXPR, src_vtbl, dst_vtbl,
+					    NULL_TREE, NULL_TREE);
+
+      gsi_insert_before (&gsi, cmp_vtbl, GSI_SAME_STMT);
+
+      e_cast = split_block (call_bb, cmp_vtbl);
+
+      /* Call statement is placed to a new block after block split.  */
+      call_bb = gimple_bb (call_stmt);
+
+      e_fail = unchecked_make_edge (gimple_bb (cmp_vtbl), call_bb, 0);
+
+      /* Create a new block to insert static type cast.  */
+      split_edge (e_cast);
+
+      e_cast->flags &= ~EDGE_FALLTHRU;
+      e_cast->flags |= EDGE_TRUE_VALUE;
+      e_fail->flags |= EDGE_FALSE_VALUE;
+      e_cast->probability = profile_probability::guessed_always().apply_scale
+					 (param_dyncast_non_null_prob, 100);
+      e_fail->probability = e_cast->probability.invert ();
+
+      tree src_cvt = make_ssa_name (src_ptr_type);
+      gphi *src_phi = create_phi_node (src_cvt, call_bb);
+
+      add_phi_arg (src_phi, src_ptr, single_succ_edge (e_cast->dest),
+		   UNKNOWN_LOCATION);
+      add_phi_arg (src_phi, build_zero_cst (src_ptr_type), e_fail,
+		   UNKNOWN_LOCATION);
+
+      src_ptr = src_cvt;
+      gsi = gsi_for_stmt (call_stmt);
+    }
+  else
+    {
+      tree cmp_expr;
+
+      cmp_expr = build2 (EQ_EXPR, boolean_type_node, src_vtbl, dst_vtbl);
+      cmp_expr = fold_build3 (COND_EXPR, src_ptr_type, cmp_expr, src_ptr,
+			      build_zero_cst (src_ptr_type));
+      cmp_expr = force_gimple_operand_gsi (&gsi, cmp_expr, true, NULL, true,
+					   GSI_SAME_STMT);
+      src_ptr = cmp_expr;
+    }
+
+  src_ptr = fold_convert (res_type, src_ptr);
+  gsi_insert_before (&gsi, gimple_build_assign (dst_ptr, src_ptr),
+		     GSI_SAME_STMT);
+
+  gsi = gsi_for_stmt (call_stmt);
+  unlink_stmt_vdef (call_stmt);
+  gsi_remove (&gsi, true);
+  cgraph_edge::remove (edge);
+  return true;
+}
+
+/* The ipa-post-devirt pass. */
+
+static unsigned int
+ipa_post_devirt (void)
+{
+  cgraph_node *node;
+
+  if (!odr_types_ptr)
+    return 0;
+
+  if (dump_file && (dump_flags & TDF_DETAILS))
+    dump_type_inheritance_graph (dump_file);
+
+  FOR_EACH_FUNCTION (node)
+    {
+      node->aux = NULL;
+
+      if (node->has_gimple_body_p ())
+	analyze_virtual_function (node);
+    }
+
+  FOR_EACH_FUNCTION_WITH_GIMPLE_BODY (node)
+    {
+      cfun_context context (node);
+      bool changed = false;
+      bool first = true;
+
+      for (cgraph_edge *edge = node->indirect_calls; edge; )
+	{
+	  cgraph_edge *next_edge = edge->next_callee;
+
+	  /* The vcall might be removed due to EH dead edge purge.  */
+	  if (edge->indirect_info->polymorphic && gimple_bb (edge->call_stmt))
+	    {
+	      if (dump_file && first)
+		{
+		  fprintf (dump_file, "\nPost-devirtualize calls in %s\n",
+			   node->dump_name ());
+		  first = false;
+		}
+
+	      changed |= post_devirtualize_vcall (edge);
+	    }
+
+	  edge = next_edge;
+	}
+
+      if (changed)
+	{
+	  cleanup_tree_cfg ();
+	  update_ssa (TODO_update_ssa);
+	  cgraph_edge::rebuild_edges ();
+	  changed = false;
+	}
+
+      for (cgraph_edge *edge = node->callees; edge; )
+	{
+	  cgraph_edge *next_edge = edge->next_callee;
+
+	  if (call_has_name_p (edge->call_stmt, "__dynamic_cast")
+	      && gimple_bb (edge->call_stmt))
+	    changed |= optimize_dynamic_cast (edge);
+
+	  edge = next_edge;
+	}
+
+      if (changed)
+	{
+	  cleanup_tree_cfg ();
+	  update_ssa (TODO_update_ssa);
+	  cgraph_edge::rebuild_edges ();
+	}
+    }
+
+  FOR_EACH_FUNCTION (node)
+    if (node->aux)
+      {
+	if (!node_is_wrapper_p (node))
+	  delete (auto_vec<tree> *) node->aux;
+
+	node->aux = NULL;
+      }
+
+  for (unsigned i = 0; i < 2; i++)
+    {
+      delete fntype_map[i];
+      fntype_map[i] = NULL;
+    }
+
+  delete typeinfo_map;
+  typeinfo_map = NULL;
+
+  return 0;
+}
+
+namespace {
+
+const pass_data pass_data_ipa_post_devirt =
+{
+  SIMPLE_IPA_PASS, /* type */
+  "post-devirt", /* name */
+  OPTGROUP_NONE, /* optinfo_flags */
+  TV_IPA_DEVIRT, /* tv_id */
+  (PROP_cfg | PROP_ssa), /* properties_required */
+  0, /* properties_provided */
+  0, /* properties_destroyed */
+  0, /* todo_flags_start */
+  ( TODO_dump_symtab ), /* todo_flags_finish */
+};
+
+class pass_ipa_post_devirt : public simple_ipa_opt_pass
+{
+public:
+  pass_ipa_post_devirt (gcc::context *ctxt)
+    : simple_ipa_opt_pass (pass_data_ipa_post_devirt, ctxt)
+  {}
+
+  /* opt_pass methods: */
+  virtual bool gate (function *)
+    {
+      return flag_devirtualize_fully && optimize;
+    }
+
+  virtual unsigned int execute (function *) { return ipa_post_devirt (); }
+
+}; // class pass_ipa_post_devirt
+
+} // anon namespace
+
+simple_ipa_opt_pass *
+make_pass_ipa_post_devirt (gcc::context *ctxt)
+{
+  return new pass_ipa_post_devirt (ctxt);
 }
 
 /* Print ODR name of a TYPE if available.

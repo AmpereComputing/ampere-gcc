@@ -23,7 +23,7 @@
 	(match_operand:GPI 1 "memory_operand" ""))
    (set (match_operand:GPI 2 "register_operand" "")
 	(match_operand:GPI 3 "memory_operand" ""))]
-  "aarch64_operands_ok_for_ldpstp (operands, true, <MODE>mode)"
+  "aarch64_operands_ok_for_ldpstp (insn, operands, true, <MODE>mode)"
   [(parallel [(set (match_dup 0) (match_dup 1))
 	      (set (match_dup 2) (match_dup 3))])]
 {
@@ -35,7 +35,7 @@
 	(match_operand:GPI 1 "aarch64_reg_or_zero" ""))
    (set (match_operand:GPI 2 "memory_operand" "")
 	(match_operand:GPI 3 "aarch64_reg_or_zero" ""))]
-  "aarch64_operands_ok_for_ldpstp (operands, false, <MODE>mode)"
+  "aarch64_operands_ok_for_ldpstp (insn, operands, false, <MODE>mode)"
   [(parallel [(set (match_dup 0) (match_dup 1))
 	      (set (match_dup 2) (match_dup 3))])]
 {
@@ -47,7 +47,7 @@
 	(match_operand:GPF 1 "memory_operand" ""))
    (set (match_operand:GPF 2 "register_operand" "")
 	(match_operand:GPF 3 "memory_operand" ""))]
-  "aarch64_operands_ok_for_ldpstp (operands, true, <MODE>mode)"
+  "aarch64_operands_ok_for_ldpstp (insn, operands, true, <MODE>mode)"
   [(parallel [(set (match_dup 0) (match_dup 1))
 	      (set (match_dup 2) (match_dup 3))])]
 {
@@ -59,7 +59,7 @@
 	(match_operand:GPF 1 "aarch64_reg_or_fp_zero" ""))
    (set (match_operand:GPF 2 "memory_operand" "")
 	(match_operand:GPF 3 "aarch64_reg_or_fp_zero" ""))]
-  "aarch64_operands_ok_for_ldpstp (operands, false, <MODE>mode)"
+  "aarch64_operands_ok_for_ldpstp (insn, operands, false, <MODE>mode)"
   [(parallel [(set (match_dup 0) (match_dup 1))
 	      (set (match_dup 2) (match_dup 3))])]
 {
@@ -71,7 +71,7 @@
 	(match_operand:DREG 1 "memory_operand" ""))
    (set (match_operand:DREG2 2 "register_operand" "")
 	(match_operand:DREG2 3 "memory_operand" ""))]
-  "aarch64_operands_ok_for_ldpstp (operands, true, <DREG:MODE>mode)"
+  "aarch64_operands_ok_for_ldpstp (insn, operands, true, <DREG:MODE>mode)"
   [(parallel [(set (match_dup 0) (match_dup 1))
 	      (set (match_dup 2) (match_dup 3))])]
 {
@@ -84,7 +84,7 @@
    (set (match_operand:DREG2 2 "memory_operand" "")
 	(match_operand:DREG2 3 "register_operand" ""))]
   "TARGET_SIMD
-   && aarch64_operands_ok_for_ldpstp (operands, false, <DREG:MODE>mode)"
+   && aarch64_operands_ok_for_ldpstp (insn, operands, false, <DREG:MODE>mode)"
   [(parallel [(set (match_dup 0) (match_dup 1))
 	      (set (match_dup 2) (match_dup 3))])]
 {
@@ -97,7 +97,7 @@
    (set (match_operand:VQ2 2 "register_operand" "")
 	(match_operand:VQ2 3 "memory_operand" ""))]
   "TARGET_SIMD
-   && aarch64_operands_ok_for_ldpstp (operands, true, <VQ:MODE>mode)
+   && aarch64_operands_ok_for_ldpstp (insn, operands, true, <VQ:MODE>mode)
    && (aarch64_tune_params.extra_tuning_flags
 	& AARCH64_EXTRA_TUNE_NO_LDP_STP_QREGS) == 0"
   [(parallel [(set (match_dup 0) (match_dup 1))
@@ -112,7 +112,7 @@
    (set (match_operand:VQ2 2 "memory_operand" "")
 	(match_operand:VQ2 3 "register_operand" ""))]
   "TARGET_SIMD
-   && aarch64_operands_ok_for_ldpstp (operands, false, <VQ:MODE>mode)
+   && aarch64_operands_ok_for_ldpstp (insn, operands, false, <VQ:MODE>mode)
    && (aarch64_tune_params.extra_tuning_flags
 	& AARCH64_EXTRA_TUNE_NO_LDP_STP_QREGS) == 0"
   [(parallel [(set (match_dup 0) (match_dup 1))
@@ -129,7 +129,7 @@
 	(sign_extend:DI (match_operand:SI 1 "memory_operand" "")))
    (set (match_operand:DI 2 "register_operand" "")
 	(sign_extend:DI (match_operand:SI 3 "memory_operand" "")))]
-  "aarch64_operands_ok_for_ldpstp (operands, true, SImode)"
+  "aarch64_operands_ok_for_ldpstp (insn, operands, true, SImode)"
   [(parallel [(set (match_dup 0) (sign_extend:DI (match_dup 1)))
 	      (set (match_dup 2) (sign_extend:DI (match_dup 3)))])]
 {
@@ -141,7 +141,7 @@
 	(zero_extend:DI (match_operand:SI 1 "memory_operand" "")))
    (set (match_operand:DI 2 "register_operand" "")
 	(zero_extend:DI (match_operand:SI 3 "memory_operand" "")))]
-  "aarch64_operands_ok_for_ldpstp (operands, true, SImode)"
+  "aarch64_operands_ok_for_ldpstp (insn, operands, true, SImode)"
   [(parallel [(set (match_dup 0) (zero_extend:DI (match_dup 1)))
 	      (set (match_dup 2) (zero_extend:DI (match_dup 3)))])]
 {
@@ -163,7 +163,7 @@
 	(match_operand:DSX 1 "aarch64_reg_zero_or_fp_zero" ""))
    (set (match_operand:<FCVT_TARGET> 2 "memory_operand" "")
 	(match_operand:<FCVT_TARGET> 3 "aarch64_reg_zero_or_fp_zero" ""))]
-  "aarch64_operands_ok_for_ldpstp (operands, false, <V_INT_EQUIV>mode)"
+  "aarch64_operands_ok_for_ldpstp (insn, operands, false, <V_INT_EQUIV>mode)"
   [(parallel [(set (match_dup 0) (match_dup 1))
 	      (set (match_dup 2) (match_dup 3))])]
 {

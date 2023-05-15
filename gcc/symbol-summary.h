@@ -115,7 +115,9 @@ protected:
     if (is_ggc ())
       ggc_delete (item);
     else
-      m_allocator.remove (item);
+      {
+	  m_allocator.remove (item);
+      }
   }
 
   /* Unregister all call-graph hooks.  */

@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-forwprop2-details -Wno-shift-count-negative" } */
+/* { dg-options "-O2 -fdump-tree-forwprop4-details -Wno-shift-count-negative" } */
 
 int ctz_ice1 (int x)
 {
@@ -32,4 +32,4 @@ int ctz_fail (unsigned x)
   return table[((x & -x) * 0x077CB531) >> 27];
 }
 
-/* { dg-final { scan-tree-dump-not {= \.CTZ} "forwprop2" } } */
+/* { dg-final { scan-tree-dump-not {= \.CTZ} "forwprop4" } } */

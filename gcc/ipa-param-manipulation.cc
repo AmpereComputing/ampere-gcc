@@ -55,7 +55,9 @@ static const char *ipa_param_prefixes[IPA_PARAM_PREFIX_COUNT]
   = {"SYNTH",
      "ISRA",
      "simd",
-     "mask"};
+     "mask",
+     "struct_reorg",
+     "dco_parm"};
 
 /* Names of parameters for dumping.  Keep in sync with enum ipa_parm_op.  */
 

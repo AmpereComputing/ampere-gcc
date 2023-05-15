@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O3 -fdump-tree-fre4" } */
+/* { dg-options "-O3 -fdump-tree-fre6" } */
 
 extern void foo(void);
 
@@ -14,4 +14,4 @@ int main() {
 }
 
 /* Even when vectorizing we should eliminate the call to foo.  */
-/* { dg-final { scan-tree-dump-not "foo" "fre4" } } */
+/* { dg-final { scan-tree-dump-not "foo" "fre6" } } */

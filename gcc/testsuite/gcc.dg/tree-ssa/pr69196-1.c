@@ -1,5 +1,5 @@
 /* { dg-do compile { target sparc*-*-* i?86-*-* x86_64-*-* } } */
-/* { dg-options "-O2 -fdump-tree-thread1-details -fdisable-tree-ethread" } */
+/* { dg-options "-O2 -fdump-tree-thread1-details -fdisable-tree-ethread1" } */
 
 /* { dg-final { scan-tree-dump "Did not thread around loop and would copy too many statements" "thread1" } } */
 

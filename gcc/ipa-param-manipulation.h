@@ -126,6 +126,8 @@ enum ipa_param_name_prefix_indices
    IPA_PARAM_PREFIX_ISRA,
    IPA_PARAM_PREFIX_SIMD,
    IPA_PARAM_PREFIX_MASK,
+   IPA_PARAM_PREFIX_REORG,
+   IPA_PARAM_PREFIX_DCO,
    IPA_PARAM_PREFIX_COUNT
 };
 
@@ -189,7 +191,7 @@ struct GTY(()) ipa_adjusted_param
 
   /* Index into ipa_param_prefixes specifying a prefix to be used with
      DECL_NAMEs of newly synthesized parameters.  */
-  unsigned param_prefix_index : 2;
+  unsigned param_prefix_index : 3;
 
   /* Storage order of the original parameter (for the cases when the new
      parameter is a component of an original one).  */

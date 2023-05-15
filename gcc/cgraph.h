@@ -876,7 +876,7 @@ struct GTY((tag ("SYMTAB_FUNCTION"))) cgraph_node : public symtab_node
     : symtab_node (SYMTAB_FUNCTION), callees (NULL), callers (NULL),
       indirect_calls (NULL),
       next_sibling_clone (NULL), prev_sibling_clone (NULL), clones (NULL),
-      clone_of (NULL), call_site_hash (NULL), former_clone_of (NULL),
+      clone_of (NULL), call_site_hash (NULL), former_clone_of (NULL), alignment_data (NULL),
       simdclone (NULL), simd_clones (NULL), ipa_transforms_to_apply (vNULL),
       inlined_to (NULL), rtl (NULL),
       count (profile_count::uninitialized ()),
@@ -1356,6 +1356,7 @@ struct GTY((tag ("SYMTAB_FUNCTION"))) cgraph_node : public symtab_node
   /* Return RTL info for the compiled function.  */
   static struct cgraph_rtl_info *rtl_info (const_tree);
 
+
   /* Return the cgraph node that has ASMNAME for its DECL_ASSEMBLER_NAME.
      Return NULL if there's no such node.  */
   static cgraph_node *get_for_asmname (tree asmname);
@@ -1398,6 +1399,8 @@ struct GTY((tag ("SYMTAB_FUNCTION"))) cgraph_node : public symtab_node
   hash_table<cgraph_edge_hasher> *GTY(()) call_site_hash;
   /* Declaration node used to be clone of. */
   tree former_clone_of;
+  /* Hash table used to hold init priorities.  */
+  hash_map<symtab_node *, int> * GTY ((skip)) alignment_data;
 
   /* If this is a SIMD clone, this points to the SIMD specific
      information for it.  */
@@ -1684,6 +1687,19 @@ public:
   unsigned vptr_changed : 1;
 };
 
+class GTY (()) cgraph_specialization_info
+{
+public:
+  unsigned arg_idx;
+  int is_unsigned; /* Whether the specialization constant is unsigned.  */
+  union
+    {
+      HOST_WIDE_INT GTY ((tag ("0"))) sval;
+      unsigned HOST_WIDE_INT GTY ((tag ("1"))) uval;
+    }
+  GTY ((desc ("%1.is_unsigned"))) cst;
+};
+
 class GTY((chain_next ("%h.next_caller"), chain_prev ("%h.prev_caller"),
 	   for_user)) cgraph_edge
 {
@@ -1724,6 +1740,12 @@ public:
    */
   cgraph_edge *make_speculative (cgraph_node *n2, profile_count direct_count,
 				 unsigned int speculative_id = 0);
+  /* Mark that this edge represents a specialized call to N2.
+     SPEC_ARGS represent the position and values of the CALL_STMT of this edge
+     that are specialized in N2.  */
+  cgraph_edge *make_specialized (cgraph_node *n2,
+				 vec<cgraph_specialization_info> *spec_args,
+				 profile_count spec_count);
 
   /* Speculative call consists of an indirect edge and one or more
      direct edge+ref pairs.  Speculative will expand to the following sequence:
@@ -1803,6 +1825,66 @@ public:
     gcc_unreachable ();
   }
 
+  /* Return the first edge that represents a specialization of the CALL_STMT
+     of this edge if one exists or NULL otherwise.  */
+  cgraph_edge *first_specialized_call_target ()
+  {
+    gcc_checking_assert (specialized && callee);
+    for (cgraph_edge *e2 = caller->callees;
+	 e2; e2 = e2->next_callee)
+      if (e2->guarded_specialization_edge_p ()
+	  && call_stmt == e2->call_stmt
+	  && lto_stmt_uid == e2->lto_stmt_uid)
+	return e2;
+
+    return NULL;
+  }
+
+  /* Return the next edge that represents a specialization of the CALL_STMT
+     of this edge if one exists or NULL otherwise.  */
+  cgraph_edge *next_specialized_call_target ()
+  {
+    cgraph_edge *e = this;
+    gcc_checking_assert (specialized && callee);
+
+    if (e->next_callee
+	&& e->next_callee->guarded_specialization_edge_p ()
+	&& e->next_callee->call_stmt == e->call_stmt
+	&& e->next_callee->lto_stmt_uid == e->lto_stmt_uid)
+      return e->next_callee;
+    return NULL;
+  }
+
+  /* When called on any edge in a specialized call return the (unique)
+     edge that points to the non specialized function.  */
+  cgraph_edge *specialized_call_base_edge ()
+  {
+    gcc_checking_assert (specialized && callee);
+    for (cgraph_edge *e2 = caller->callees;
+	 e2; e2 = e2->next_callee)
+      if (e2->base_specialization_edge_p ()
+	  && call_stmt == e2->call_stmt
+	  && lto_stmt_uid == e2->lto_stmt_uid)
+	return e2;
+
+    return NULL;
+  }
+
+  /* Return true iff this edge is part of specialized sequence and is the
+     original edge for which other specialization edges potentially exist.  */
+  bool base_specialization_edge_p () const
+  {
+    return specialized && spec_args == NULL;
+  }
+
+  /* Return true iff this edge is part of specialized sequence and it
+     represents a potential specialization target that canbe used instead
+     of the base edge.  */
+  bool guarded_specialization_edge_p () const
+  {
+    return specialized && spec_args != NULL;
+  }
+
   /* Speculative call edge turned out to be direct call to CALLEE_DECL.  Remove
      the speculative call sequence and return edge representing the call, the
      original EDGE can be removed and deallocated.  It is up to caller to
@@ -1820,6 +1902,11 @@ public:
      and redirect the call as appropriate.  */
   static cgraph_edge *resolve_speculation (cgraph_edge *edge,
 					   tree callee_decl = NULL);
+
+  /* Given the base edge of a group of specialized edges remove all its
+     specialized edges.  Essentially this can be used to undo the descision
+     to specialize EDGE.  */
+  static void remove_specializations (cgraph_edge *edge);
 
   /* If necessary, change the function declaration in the call statement
      associated with edge E so that it corresponds to the edge callee.
@@ -1896,7 +1983,14 @@ public:
   /* Additional information about an indirect call.  Not cleared when an edge
      becomes direct.  */
   cgraph_indirect_call_info *indirect_info;
+
   PTR GTY ((skip (""))) aux;
+
+  /* If this edge has a specialized function as a callee then this array
+     holds the indices and values of the specialized arguments.  */
+  cgraph_specialization_info *spec_args;
+  unsigned int spec_args_count;
+
   /* When equal to CIF_OK, inline this call.  Otherwise, points to the
      explanation why function was not inlined.  */
   enum cgraph_inline_failed_t inline_failed;
@@ -1934,6 +2028,21 @@ public:
      Optimizers may later redirect direct call to clone, so 1) and 3)
      do not need to necessarily agree with destination.  */
   unsigned int speculative : 1;
+  /* Edges with SPECIALIZED flag represents calls that have additional
+     specialized functions that can be used instead (as a result of ipa-cp).
+     The final code sequence will have form:
+
+     if (specialized_arg_0 == specialized_const_0
+	 && ...
+	 && specialized_arg_i == specialized_const_i)
+       call_target.constprop.N (non_specialized_arg_0, ...);
+     ...
+     more potential specializations
+     ...
+     else
+       call_target ();
+  */
+  unsigned int specialized : 1;
   /* Set to true when caller is a constructor or destructor of polymorphic
      type.  */
   unsigned in_polymorphic_cdtor : 1;
@@ -1964,6 +2073,9 @@ private:
   /* Set callee N of call graph edge and add it to the corresponding set of
      callers. */
   void set_callee (cgraph_node *n);
+
+  /* Worker for redirect_call_stmt_to_callee.  */
+  static gcall *redirect_call_stmt_to_callee_1 (cgraph_edge *e);
 
   /* Output flags of edge to a file F.  */
   void dump_edge_flags (FILE *f);
@@ -3128,7 +3240,9 @@ cgraph_node::can_remove_if_no_direct_calls_and_refs_p (void)
     return false;
   /* Only COMDAT functions can be removed if externally visible.  */
   if (externally_visible
-      && ((!DECL_COMDAT (decl) || ifunc_resolver)
+      && ((!DECL_COMDAT (decl)
+	   || (flag_devirtualize_fully && !in_lto_p && flag_generate_lto)
+	   || ifunc_resolver)
 	  || forced_by_abi
 	  || used_from_object_file_p ()))
     return false;
@@ -3292,6 +3406,13 @@ cgraph_edge::remove_callee (void)
     next_caller->prev_caller = prev_caller;
   if (!prev_caller)
     callee->callers = next_caller;
+
+  if (inline_failed && callee->comdat_local_p ())
+    {
+      cgraph_node *to = caller->inlined_to ? caller->inlined_to : caller;
+      if (to->calls_comdat_local)
+	to->calls_comdat_local = to->check_calls_comdat_local_p ();
+    }
 }
 
 /* Return true if call must bind to current definition.  */

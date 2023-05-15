@@ -490,13 +490,14 @@ alias_set_subset_of (alias_set_type set1, alias_set_type set2)
 /* Return 1 if the two specified alias sets may conflict.  */
 
 int
-alias_sets_conflict_p (alias_set_type set1, alias_set_type set2)
+alias_sets_conflict_p (alias_set_type set1, alias_set_type set2,
+		       bool check_strict_aliasing)
 {
   alias_set_entry *ase1;
   alias_set_entry *ase2;
 
   /* The easy case.  */
-  if (alias_sets_must_conflict_p (set1, set2))
+  if (alias_sets_must_conflict_p (set1, set2, check_strict_aliasing))
     return 1;
 
   /* See if the first alias set is a subset of the second.  */
@@ -564,10 +565,11 @@ alias_sets_conflict_p (alias_set_type set1, alias_set_type set2)
 /* Return 1 if the two specified alias sets will always conflict.  */
 
 int
-alias_sets_must_conflict_p (alias_set_type set1, alias_set_type set2)
+alias_sets_must_conflict_p (alias_set_type set1, alias_set_type set2,
+			    bool check_strict_aliasing)
 {
   /* Disable TBAA oracle with !flag_strict_aliasing.  */
-  if (!flag_strict_aliasing)
+  if (check_strict_aliasing && !flag_strict_aliasing)
     return 1;
   if (set1 == 0 || set2 == 0)
     {

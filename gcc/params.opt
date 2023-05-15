@@ -94,6 +94,10 @@ Average number of iterations of a loop.
 Common Joined UInteger Var(param_avoid_fma_max_bits) IntegerRange(0, 512) Param Optimization
 Maximum number of bits for which we avoid creating FMAs.
 
+-param=op-count-prefer-reassoc=
+Common Joined UInteger Var(param_op_count_prefer_reassoc) Param Optimization
+Set the minimum number of operators in a list, when reassociation is preferred (than inserting as much as FMA as possible).  If 0, always insert FMA as much as possible.
+
 -param=builtin-expect-probability=
 Common Joined UInteger Var(param_builtin_expect_probability) Init(90) IntegerRange(0, 100) Param Optimization
 Set the estimated probability in percentage for builtin expect. The default value is 90% probability.
@@ -121,6 +125,10 @@ Maximum number of queries into the alias oracle per store.
 -param=dse-max-object-size=
 Common Joined UInteger Var(param_dse_max_object_size) Init(256) Param Optimization
 Maximum size (in bytes) of objects tracked bytewise by dead store elimination.
+
+-param=array-dse-redundancy-percent=
+Common Joined UInteger Var(param_array_dse_redundancy_percent) Init(50) IntegerRange(0, 100) Param Optimization
+Threshold of redundancy percentage on array manipulation to trigger array dse.
 
 -param=early-inlining-insns=
 Common Joined UInteger Var(param_early_inlining_insns) Init(6) Optimization Param
@@ -236,6 +244,14 @@ The upper bound for sharing integer constants.
 -param=ipa-cp-eval-threshold=
 Common Joined UInteger Var(param_ipa_cp_eval_threshold) Init(500) Param Optimization
 Threshold ipa-cp opportunity evaluation that is still considered beneficial to clone.
+
+-param=ipa-guarded-specialization-guard-complexity=
+Common Joined UInteger Var(param_ipa_spec_guard_complexity) Init(2) Param Optimization
+Maximum number of required comparisons for a single specialization guard.
+
+-param=ipa-guarded-specializations-per-edge=
+Common Joined UInteger Var(param_ipa_spec_max_per_edge) Init(3) Param Optimization
+Maximum number of guarded specializations for a single function call.
 
 -param=ipa-cp-loop-hint-bonus=
 Common Joined UInteger Var(param_ipa_cp_loop_hint_bonus) Init(64) Param Optimization
@@ -773,6 +789,42 @@ Maximum number of VALUEs handled during a single find_base_term call.
 Common Joined UInteger Var(param_max_vrp_switch_assertions) Init(10) Param Optimization
 Maximum number of assertions to add along the default edge of a switch statement during VRP.
 
+-param=mgo-max-dep-load-level=
+Common Joined UInteger Var(param_mgo_dep_load_level) Init(8) IntegerRange(1, 32) Param Optimization
+The maximum level of dependent load that MGO could find starting from a loop iterator.
+
+-param=mgo-max-cache-elem-size=
+Common Joined UInteger Var(param_mgo_max_cache_elem_size) Init(64) IntegerRange(1, 65536) Param Optimization
+The maximum size (in bytes) for cache data element used to hold values of loads in each loop iteration.
+
+-param=mgo-min-cache-array-length=
+Common Joined UInteger Var(param_mgo_min_cache_array_length) Init(64) IntegerRange(1, 2147483647) Param Optimization
+The minimum element number of cache-array to trigger MGO.  It must be less than or equal to mgo-max-cache-array-length.
+
+-param=mgo-max-cache-array-length=
+Common Joined UInteger Var(param_mgo_max_cache_array_length) Init(8388608) IntegerRange(1, 2147483647) Param Optimization
+The maximum element number of cache-array, above which MGO will be suppressed.
+
+-param=mgo-runtime-alias-check=
+Common Joined UInteger Var(param_mgo_runtime_alias_check) Init(2) IntegerRange(0, 2) Param Optimization
+Enable runtime alias check for dependent load in mgo.
+
+-param=lro-min-niter=
+Common Joined UInteger Var(param_lro_min_niter) Init(4) Param Optimization
+The minimum loop iteration to perform loop depth reduction optimization. If zero, assume no limit on the value.
+
+-param=lro-max-niter=
+Common Joined UInteger Var(param_lro_max_niter) Init(8) Param Optimization
+The maximum loop iteration to perform loop depth reduction optimization. If zero, assume no limit on the value.
+
+-param=lro-max-store_stmts=
+Common Joined UInteger Var(param_lro_max_store_stmts) Init(4) Param Optimization
+The maximum store statements for which loop depth reduction optimization would apply transformations. If zero, disable the optimzation.
+
+-param=lro-max-insns=
+Common Joined UInteger Var(param_lro_max_insns) Init(0) Param Optimization
+The maximum number of instructions in loop, beyond which loop depth reduction optimization would not be enabled. If zero, use the value from max-completely-peeled-insns.
+
 -param=min-crossjump-insns=
 Common Joined UInteger Var(param_min_crossjump_insns) Init(5) IntegerRange(1, 65536) Param Optimization
 The minimum number of matching instructions to consider for crossjumping.
@@ -788,6 +840,10 @@ Min. ratio of insns to prefetches to enable prefetching for a loop with an unkno
 -param=min-loop-cond-split-prob=
 Common Joined UInteger Var(param_min_loop_cond_split_prob) Init(30) IntegerRange(0, 100) Param Optimization
 The minimum threshold for probability of semi-invariant condition statement to trigger loop split.
+
+-param=dyncast-non-null-prob=
+Common Joined UInteger Var(param_dyncast_non_null_prob) Init(50) IntegerRange(0, 100) Param Optimization
+The probability that dynamic cast result is non null, which is used in generation conditional statement when optimizing dynamic cast. If zero, do not use condional statement.
 
 -param=min-nondebug-insn-uid=
 Common Joined UInteger Var(param_min_nondebug_insn_uid) Param
@@ -864,6 +920,10 @@ Enum(parloops_schedule_type) String(runtime) Value(PARLOOPS_SCHEDULE_RUNTIME)
 -param=partial-inlining-entry-probability=
 Common Joined UInteger Var(param_partial_inlining_entry_probability) Init(70) Optimization IntegerRange(0, 100) Param
 Maximum probability of the entry BB of split region (in percent relative to entry BB of the function) to make partial inlining happen.
+
+-param=struct-reorg-cold-struct-ratio=
+Common Joined UInteger Var(param_struct_reorg_cold_struct_ratio) Init(10) IntegerRange(0, 100) Param Optimization
+The threshold ratio between current and hottest structure counts.
 
 -param=predictable-branch-outcome=
 Common Joined UInteger Var(param_predictable_branch_outcome) Init(2) IntegerRange(0, 50) Param Optimization

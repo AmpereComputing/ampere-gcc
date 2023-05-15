@@ -42,6 +42,9 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple-pretty-print.h"
 #include "dumpfile.h"
 #include "builtins.h"
+#include "tree-cfg.h"
+#include "tree-dfa.h"
+#include "tree-cfgcleanup.h"
 
 /* In this file value profile based optimizations are placed.  Currently the
    following optimizations are implemented (for more detailed descriptions
@@ -1343,12 +1346,15 @@ gimple_ic (gcall *icall_stmt, struct cgraph_node *direct_call,
   cond_stmt = gimple_build_cond (EQ_EXPR, tmp1, tmp0, NULL_TREE, NULL_TREE);
   gsi_insert_before (&gsi, cond_stmt, GSI_SAME_STMT);
 
-  if (TREE_CODE (gimple_vdef (icall_stmt)) == SSA_NAME)
+  if (gimple_vdef (icall_stmt))
     {
-      unlink_stmt_vdef (icall_stmt);
-      release_ssa_name (gimple_vdef (icall_stmt));
+      if (TREE_CODE (gimple_vdef (icall_stmt)) == SSA_NAME)
+	{
+	  unlink_stmt_vdef (icall_stmt);
+	  release_ssa_name (gimple_vdef (icall_stmt));
+	}
+      gimple_set_vdef (icall_stmt, NULL_TREE);
     }
-  gimple_set_vdef (icall_stmt, NULL_TREE);
   gimple_set_vuse (icall_stmt, NULL_TREE);
   update_stmt (icall_stmt);
   dcall_stmt = as_a <gcall *> (gimple_copy (icall_stmt));
@@ -1444,6 +1450,233 @@ gimple_ic (gcall *icall_stmt, struct cgraph_node *direct_call,
   if (!stmt_could_throw_p (cfun, dcall_stmt))
     gimple_purge_dead_eh_edges (dcall_bb);
   return dcall_stmt;
+}
+
+/* Do transformation
+
+  if (arg_i == spec_args[y] && ...)
+    do call to specialized target callee
+  else
+    old call
+ */
+
+gcall *
+gimple_sc (struct cgraph_edge *edg, profile_probability prob)
+{
+  /* The call statement we're modifying.  */
+  gcall *call_stmt = edg->call_stmt;
+  /* The cgraph_node of the specialized function.  */
+  cgraph_node *callee = edg->callee;
+  cgraph_specialization_info *spec_args = edg->spec_args;
+  unsigned spec_args_count = edg->spec_args_count;
+
+  /* CALL_STMT should be the call_stmt of the generic function.  */
+  gcc_checking_assert (edg->specialized_call_base_edge ()->call_stmt
+		      == call_stmt);
+
+  gcall *spec_call_stmt = NULL;
+  tree cond_tree = NULL_TREE;
+  gcond *cond_stmt = NULL;
+  basic_block cond_bb, dcall_bb, icall_bb, join_bb = NULL;
+  edge e_cd, e_ci, e_di, e_dj = NULL, e_ij;
+  gimple_stmt_iterator gsi;
+  int lp_nr, dflags;
+  edge e_eh, e;
+  edge_iterator ei;
+
+  cond_bb = gimple_bb (call_stmt);
+  gsi = gsi_for_stmt (call_stmt);
+
+  /* To call the specialized function we need to build a guard conditional
+     with the specialized arguments and constants.  */
+  unsigned nargs = gimple_call_num_args (call_stmt);
+  unsigned cur_spec = 0;
+  bool dump_first = true;
+
+  if (dump_file)
+    {
+      fprintf (dump_file, "Creating specialization guard for edge %s -> %s:\n",
+			 edg->caller->dump_name (), edg->callee->dump_name ());
+      fprintf (dump_file, "if (");
+    }
+
+  for (unsigned arg_idx = 0; arg_idx < nargs; arg_idx++)
+    {
+      tree cur_arg = gimple_call_arg (call_stmt, arg_idx);
+      bool cur_arg_specialized_p = cur_spec < spec_args_count
+	&& arg_idx == spec_args[cur_spec].arg_idx;
+
+      if (cur_arg_specialized_p)
+	{
+	  gcc_checking_assert (!cond_stmt);
+
+	  cgraph_specialization_info spec_info = spec_args[cur_spec];
+	  cur_spec++;
+
+	  tree spec_v;
+	  if (spec_info.is_unsigned)
+	    spec_v = build_int_cstu (integer_type_node, spec_info.cst.uval);
+	  else
+	    spec_v = build_int_cst (integer_type_node, spec_info.cst.sval);
+
+	  tree cmp_const = fold_convert (TREE_TYPE (cur_arg), spec_v);
+
+	  tree cur_arg_eq_spec = build2 (EQ_EXPR, boolean_type_node,
+					      cur_arg, cmp_const);
+
+	  if (dump_file)
+	    {
+	      if (!dump_first)
+		fprintf (dump_file, " && ");
+	      print_generic_expr (dump_file, cur_arg_eq_spec);
+	      dump_first = false;
+	    }
+
+	  tree tmp1 = make_temp_ssa_name (boolean_type_node, NULL, "SPEC");
+	  gassign* load_stmt1 = gimple_build_assign (tmp1, cur_arg_eq_spec);
+	  gsi_insert_before (&gsi, load_stmt1, GSI_SAME_STMT);
+
+	  if (!cond_tree)
+	    cond_tree = tmp1;
+	  else
+	    {
+	      tree cur_and_prev_true = fold_build2 (BIT_AND_EXPR,
+					 boolean_type_node,
+					 cond_tree,
+					 tmp1);
+
+	      tree tmp2 = make_temp_ssa_name (boolean_type_node, NULL, "SPEC");
+	      gassign* load_stmt2
+		= gimple_build_assign (tmp2, cur_and_prev_true);
+	      gsi_insert_before (&gsi, load_stmt2, GSI_SAME_STMT);
+	      cond_tree = tmp2;
+	    }
+	}
+    }
+
+  /* If not all specializations were used to construct the guard then
+     don't use this specialization.  This can happen when some other IPA
+     pass changes the signature of the base call.  */
+  if (cur_spec < spec_args_count)
+    cond_tree = build_int_cst (boolean_type_node, 0);
+
+  cond_stmt = gimple_build_cond (EQ_EXPR, cond_tree, boolean_true_node,
+				 NULL_TREE, NULL_TREE);
+
+  gsi_insert_before (&gsi, cond_stmt, GSI_SAME_STMT);
+
+  if (gimple_vdef (call_stmt)
+      && TREE_CODE (gimple_vdef (call_stmt)) == SSA_NAME)
+    {
+      unlink_stmt_vdef (call_stmt);
+      release_ssa_name (gimple_vdef (call_stmt));
+    }
+  gimple_set_vdef (call_stmt, NULL_TREE);
+  gimple_set_vuse (call_stmt, NULL_TREE);
+  update_stmt (call_stmt);
+  spec_call_stmt = as_a <gcall *> (gimple_copy (call_stmt));
+  gimple_call_set_fndecl (spec_call_stmt, callee->decl);
+  dflags = flags_from_decl_or_type (callee->decl);
+
+  if ((dflags & ECF_NORETURN) != 0
+      && should_remove_lhs_p (gimple_call_lhs (spec_call_stmt)))
+    gimple_call_set_lhs (spec_call_stmt, NULL_TREE);
+  gsi_insert_before (&gsi, spec_call_stmt, GSI_SAME_STMT);
+
+  if (dump_file)
+    {
+      fprintf (dump_file, ")");
+      if (cur_spec < spec_args_count)
+	fprintf (dump_file, " [guard disabled]");
+      fprintf (dump_file, "\n  ");
+      print_gimple_stmt (dump_file, spec_call_stmt, 0);
+    }
+
+  e_cd = split_block (cond_bb, cond_stmt);
+  dcall_bb = e_cd->dest;
+  dcall_bb->count = cond_bb->count.apply_probability (prob);
+
+  e_di = split_block (dcall_bb, spec_call_stmt);
+  icall_bb = e_di->dest;
+  icall_bb->count = cond_bb->count - dcall_bb->count;
+
+  if (!stmt_ends_bb_p (call_stmt))
+    e_ij = split_block (icall_bb, call_stmt);
+  else
+    {
+      e_ij = find_fallthru_edge (icall_bb->succs);
+      if (e_ij != NULL)
+	{
+	  e_ij->probability = profile_probability::always ();
+	  e_ij = single_pred_edge (split_edge (e_ij));
+	}
+    }
+  if (e_ij != NULL)
+    {
+      join_bb = e_ij->dest;
+      join_bb->count = cond_bb->count;
+    }
+
+  e_cd->flags = (e_cd->flags & ~EDGE_FALLTHRU) | EDGE_TRUE_VALUE;
+  e_cd->probability = prob;
+
+  e_ci = make_edge (cond_bb, icall_bb, EDGE_FALSE_VALUE);
+  e_ci->probability = prob.invert ();
+
+  remove_edge (e_di);
+
+  if (e_ij != NULL)
+    {
+      if ((dflags & ECF_NORETURN) == 0)
+	{
+	  e_dj = make_edge (dcall_bb, join_bb, EDGE_FALLTHRU);
+	  e_dj->probability = profile_probability::always ();
+	}
+      e_ij->probability = profile_probability::always ();
+    }
+
+  if (gimple_call_lhs (call_stmt)
+      && TREE_CODE (gimple_call_lhs (call_stmt)) == SSA_NAME
+      && (dflags & ECF_NORETURN) == 0)
+    {
+      tree result = gimple_call_lhs (call_stmt);
+      gphi *phi = create_phi_node (result, join_bb);
+      gimple_call_set_lhs (call_stmt,
+			   duplicate_ssa_name (result, call_stmt));
+      add_phi_arg (phi, gimple_call_lhs (call_stmt), e_ij, UNKNOWN_LOCATION);
+      gimple_call_set_lhs (spec_call_stmt,
+			   duplicate_ssa_name (result, spec_call_stmt));
+      add_phi_arg (phi, gimple_call_lhs (spec_call_stmt), e_dj,
+		   UNKNOWN_LOCATION);
+    }
+
+  lp_nr = lookup_stmt_eh_lp (call_stmt);
+  if (lp_nr > 0 && stmt_could_throw_p (cfun, spec_call_stmt))
+    {
+      add_stmt_to_eh_lp (spec_call_stmt, lp_nr);
+    }
+
+  FOR_EACH_EDGE (e_eh, ei, icall_bb->succs)
+    if (e_eh->flags & (EDGE_EH | EDGE_ABNORMAL))
+      {
+	e = make_edge (dcall_bb, e_eh->dest, e_eh->flags);
+	e->probability = e_eh->probability;
+	for (gphi_iterator psi = gsi_start_phis (e_eh->dest);
+	     !gsi_end_p (psi); gsi_next (&psi))
+	  {
+	    gphi *phi = psi.phi ();
+	    SET_USE (PHI_ARG_DEF_PTR_FROM_EDGE (phi, e),
+		     PHI_ARG_DEF_FROM_EDGE (phi, e_eh));
+	  }
+       }
+
+  if (maybe_clean_eh_stmt(spec_call_stmt))
+    gimple_purge_dead_eh_edges(dcall_bb);
+
+  if (maybe_clean_eh_stmt(call_stmt))
+    gimple_purge_dead_eh_edges(icall_bb);
+
+  return spec_call_stmt;
 }
 
 /* Dump info about indirect call profile.  */

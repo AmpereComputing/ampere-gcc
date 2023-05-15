@@ -217,6 +217,16 @@ struct vn_avail
   struct vn_ssa_aux *next_undo;
 };
 
+/* In vn_ssa_aux structure, hold a lists of references to the nary map entries,
+   so that when recording new equivalence to the value number, we can re-insert
+   expressions' results based on this.  */
+struct nary_ref
+{
+  nary_ref *next;
+  vn_nary_op_t slot;
+  struct vn_ssa_aux *next_undo;
+};
+
 typedef struct vn_ssa_aux
 {
   /* SSA name this vn_ssa_aux is associated with in the lattice.  */
@@ -230,8 +240,14 @@ typedef struct vn_ssa_aux
      for SSA names also serving as values (NAME == VALNUM).  */
   vn_avail *avail;
 
+  /* References to slots in the nary map, with VALNUM as operand.  */
+  nary_ref *ref;
+
   /* Unique identifier that all expressions with the same value have. */
   unsigned int value_id;
+
+  /* nary_ref count.  */
+  unsigned short num_nary_ref;
 
   /* Whether the SSA_NAME has been processed at least once.  */
   unsigned visited : 1;

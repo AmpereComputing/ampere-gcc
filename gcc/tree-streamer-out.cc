@@ -102,10 +102,20 @@ pack_ts_base_value_fields (struct bitpack_d *bp, tree expr)
   bp_pack_value (bp, (TREE_CODE (expr) != SSA_NAME
 		      ? 0 : TREE_ASM_WRITTEN (expr)), 1);
   if (TYPE_P (expr))
-    bp_pack_value (bp, TYPE_ARTIFICIAL (expr), 1);
+    {
+      bp_pack_value (bp, TYPE_ARTIFICIAL (expr), 1);
+      /* Clear whole-program local flag of type if full devirtualization is
+	 disabled at LTRANS stage.  */
+      if (flag_wpa && (!flag_devirtualize_fully || !flag_ltrans_devirtualize))
+	bp_pack_value (bp, 0, 1);
+      else
+	bp_pack_value (bp, TYPE_CXX_LOCAL (expr), 1);
+    }
   else
-    bp_pack_value (bp, TREE_NO_WARNING (expr), 1);
-  bp_pack_value (bp, TREE_NOTHROW (expr), 1);
+    {
+      bp_pack_value (bp, TREE_NO_WARNING (expr), 1);
+      bp_pack_value (bp, TREE_NOTHROW (expr), 1);
+    }
   bp_pack_value (bp, TREE_STATIC (expr), 1);
   if (TREE_CODE (expr) != TREE_BINFO)
     bp_pack_value (bp, TREE_PRIVATE (expr), 1);
@@ -356,6 +366,9 @@ pack_ts_type_common_value_fields (struct bitpack_d *bp, tree expr)
       bp_pack_value (bp, flag_wpa && TYPE_CANONICAL (expr)
 			 ? TYPE_CXX_ODR_P (TYPE_CANONICAL (expr))
 			 : TYPE_CXX_ODR_P (expr), 1);
+      bp_pack_value (bp, TYPE_OFFSETOF_P (expr), 1);
+      bp_pack_value (bp, TYPE_NON_ESCAPING_P (expr), 1);
+      bp_pack_value (bp, TYPE_SIZEOF_P (expr), 1);
     }
   else if (TREE_CODE (expr) == ARRAY_TYPE)
     bp_pack_value (bp, TYPE_NONALIASED_COMPONENT (expr), 1);
@@ -553,7 +566,10 @@ static void
 write_ts_common_tree_pointers (struct output_block *ob, tree expr)
 {
   if (TREE_CODE (expr) != IDENTIFIER_NODE)
+  {
     stream_write_tree_ref (ob, TREE_TYPE (expr));
+    stream_write_tree_ref (ob, NULL_TREE);
+  }
 }
 
 

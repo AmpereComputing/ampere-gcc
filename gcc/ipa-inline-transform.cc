@@ -775,10 +775,26 @@ inline_transform (struct cgraph_node *node)
     }
 
   maybe_materialize_called_clones (node);
+
+  /* Verify NODE before doing potential speculative transformations.  */
+  if (flag_checking)
+    node->verify ();
+
+  /* Perform call statement redirection in two steps.  In the first step
+     only consider speculative edges and then process the rest in a separate
+     step.  This is required due to the potential existance of edges that are
+     both speculative and specialized, in which case we need to process them
+     in this order.  */
   for (e = node->callees; e; e = next)
     {
       if (!e->inline_failed)
 	has_inline = true;
+      next = e->next_callee;
+      if (e->speculative)
+	cgraph_edge::redirect_call_stmt_to_callee (e);
+    }
+  for (e = node->callees; e; e = next)
+    {
       next = e->next_callee;
       cgraph_edge::redirect_call_stmt_to_callee (e);
     }

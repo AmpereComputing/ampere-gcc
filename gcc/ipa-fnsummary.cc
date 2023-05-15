@@ -257,6 +257,13 @@ redirect_to_unreachable (struct cgraph_edge *e)
     e = cgraph_edge::resolve_speculation (e, target->decl);
   else if (!e->callee)
     e = cgraph_edge::make_direct (e, target);
+  else if (e->base_specialization_edge_p ())
+    {
+      /* If the base edge becomes unreachable there's no reason to
+	 keep the specializations around.  */
+      cgraph_edge::remove_specializations (e);
+      e->redirect_callee (target);
+    }
   else
     e->redirect_callee (target);
   class ipa_call_summary *es = ipa_call_summaries->get (e);
@@ -883,6 +890,7 @@ ipa_fn_summary_t::duplicate (cgraph_node *src,
 	  ipa_predicate new_predicate;
 	  class ipa_call_summary *es = ipa_call_summaries->get (edge);
 	  next = edge->next_callee;
+	  bool update_next = edge->specialized;
 
 	  if (!edge->inline_failed)
 	    inlined_to_p = true;
@@ -893,6 +901,9 @@ ipa_fn_summary_t::duplicate (cgraph_node *src,
 	  if (new_predicate == false && *es->predicate != false)
 	    optimized_out_size += es->call_stmt_size * ipa_fn_summary::size_scale;
 	  edge_set_predicate (edge, &new_predicate);
+	  /* NEXT may be invalidated for specialized calls.  */
+	  if (update_next)
+	    next = edge->next_callee;
 	}
 
       /* Remap indirect edge predicates with the same simplification as above.
@@ -2842,6 +2853,29 @@ analyze_function_body (struct cgraph_node *node, bool early)
 						     es, es3);
 		    }
 		}
+	      if (edge->specialized)
+		{
+		  cgraph_edge *base
+			= edge->specialized_call_base_edge ();
+		  ipa_call_summary *es2
+			 = ipa_call_summaries->get_create (base);
+		  ipa_call_summaries->duplicate (edge, base,
+						 es, es2);
+
+		  /* Edge is the first direct call.
+		     create and duplicate call summaries for multiple
+		     speculative call targets.  */
+		  for (cgraph_edge *specialization
+			 = edge->next_specialized_call_target ();
+		       specialization; specialization
+			 = specialization->next_specialized_call_target ())
+		    {
+		      ipa_call_summary *es3
+			= ipa_call_summaries->get_create (specialization);
+		      ipa_call_summaries->duplicate (edge, specialization,
+						     es, es3);
+		    }
+		}
 	    }
 
 	  /* TODO: When conditional jump or switch is known to be constant, but
@@ -3292,6 +3326,9 @@ estimate_edge_size_and_time (struct cgraph_edge *e, int *size, int *min_size,
 			     sreal *time, ipa_call_arg_values *avals,
 			     ipa_hints *hints)
 {
+  if (e->guarded_specialization_edge_p ())
+    return;
+
   class ipa_call_summary *es = ipa_call_summaries->get (e);
   int call_size = es->call_stmt_size;
   int call_time = es->call_stmt_time;
@@ -4039,6 +4076,7 @@ remap_edge_summaries (struct cgraph_edge *inlined_edge,
     {
       ipa_predicate p;
       next = e->next_callee;
+      bool update_next = e->specialized;
 
       if (e->inline_failed)
 	{
@@ -4062,6 +4100,10 @@ remap_edge_summaries (struct cgraph_edge *inlined_edge,
 		              params_summary, callee_info,
 			      operand_map, offset_map, possible_truths,
 			      toplev_predicate);
+
+      /* NEXT may be invalidated for specialized calls.  */
+      if (update_next)
+	next = e->next_callee;
     }
   for (e = node->indirect_calls; e; e = next)
     {
@@ -4642,7 +4684,6 @@ ipa_fn_summary_read (void)
 	fatal_error (input_location,
 		     "ipa inline summary is missing in input file");
     }
-  ipa_register_cgraph_hooks ();
 
   gcc_assert (ipa_fn_summaries);
   ipa_fn_summaries->enable_insertion_hook ();

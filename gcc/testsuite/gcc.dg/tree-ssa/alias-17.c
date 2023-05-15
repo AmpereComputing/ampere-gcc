@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O -fno-early-inlining -fdump-tree-ccp2" } */
+/* { dg-options "-O -fno-early-inlining -fdump-tree-ccp3" } */
 
 int *p;
 int inline bar(void) { return 0; }
@@ -14,4 +14,4 @@ int foo(int x)
   return *q + *p;
 }
 
-/* { dg-final { scan-tree-dump-not "NOTE: no flow-sensitive alias info for" "ccp2" } } */
+/* { dg-final { scan-tree-dump-not "NOTE: no flow-sensitive alias info for" "ccp3" } } */

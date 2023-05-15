@@ -1,6 +1,6 @@
 /* { dg-do compile } */
 /* { dg-require-effective-target c++17 } */
-/* { dg-options "-O2 -fdump-tree-fre3" } */
+/* { dg-options "-O2 -fdump-tree-fre5" } */
 
 struct _Base
 { 
@@ -68,4 +68,4 @@ int main()
 }
 
 /* FRE3 should elide all conditionals in the remaining main.  */
-/* { dg-final { scan-tree-dump-times "<bb" 1 "fre3" } } */
+/* { dg-final { scan-tree-dump-times "<bb" 1 "fre5" } } */

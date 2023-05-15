@@ -270,6 +270,8 @@ lto_output_edge (struct lto_simple_output_block *ob, struct cgraph_edge *edge,
   bp_pack_value (&bp, edge->speculative_id, 16);
   bp_pack_value (&bp, edge->indirect_inlining_edge, 1);
   bp_pack_value (&bp, edge->speculative, 1);
+  bp_pack_value (&bp, edge->specialized, 1);
+  bp_pack_value (&bp, edge->spec_args != NULL, 1);
   bp_pack_value (&bp, edge->call_stmt_cannot_inline_p, 1);
   gcc_assert (!edge->call_stmt_cannot_inline_p
 	      || edge->inline_failed != CIF_BODY_NOT_AVAILABLE);
@@ -294,7 +296,27 @@ lto_output_edge (struct lto_simple_output_block *ob, struct cgraph_edge *edge,
       bp_pack_value (&bp, edge->indirect_info->num_speculative_call_targets,
 		     16);
     }
+
   streamer_write_bitpack (&bp);
+
+  if (edge->spec_args != NULL)
+    {
+      unsigned len = edge->spec_args_count, i;
+      streamer_write_uhwi_stream (ob->main_stream, len);
+
+      for (i = 0; i < len; i++)
+	{
+	  cgraph_specialization_info *spec_info = &edge->spec_args[i];
+	  unsigned idx = spec_info->arg_idx;
+	  streamer_write_uhwi_stream (ob->main_stream, idx);
+	  streamer_write_hwi_stream (ob->main_stream, spec_info->is_unsigned);
+
+	  if (spec_info->is_unsigned)
+	    streamer_write_uhwi_stream (ob->main_stream, spec_info->cst.uval);
+	  else
+	    streamer_write_hwi_stream (ob->main_stream, spec_info->cst.sval);
+	}
+    }
 }
 
 /* Return if NODE contain references from other partitions.  */
@@ -861,6 +883,25 @@ compute_ltrans_boundary (lto_symtab_encoder_t in_encoder)
       lto_set_symtab_encoder_encode_initializer (encoder, vnode);
       create_references (encoder, vnode);
     }
+
+  /* Add all defined vtables to streaming encoder, so that we could
+     reconstruct complete class hierarchy at LTRANS for any whole-program
+     local type as what it was at WPA to enable late full devirtualization.
+
+     TODO: For a partition, only need to encode a subset of vtables, not all
+     of them.  Some class hierarchy that is not referenced in the partition
+     could be excluded.  */
+  if (flag_devirtualize_fully && flag_ltrans_devirtualize && flag_wpa)
+    {
+      varpool_node *vnode;
+
+      FOR_EACH_DEFINED_VARIABLE (vnode)
+	if (DECL_VIRTUAL_P (vnode->decl) && !DECL_EXTERNAL (vnode->decl)
+	    && TYPE_CXX_LOCAL (DECL_CONTEXT (vnode->decl))
+	    && lto_symtab_encoder_lookup (encoder, vnode) == LCC_NOT_FOUND)
+	  lto_symtab_encoder_encode (encoder, vnode);
+    }
+
   /* Pickle in also the initializer of all referenced readonly variables
      to help folding.  Constant pool variables are not shared, so we must
      pickle those too.  */
@@ -964,7 +1005,7 @@ output_symtab (void)
   int i, n_nodes;
   lto_symtab_encoder_t encoder;
 
-  if (flag_wpa)
+  if (flag_wpa && !flag_wpt)
     output_cgraph_opt_summary ();
 
   ob = lto_create_simple_output_block (LTO_section_symtab_nodes);
@@ -1488,6 +1529,8 @@ input_edge (class lto_input_block *ib, vec<symtab_node *> nodes,
 
   edge->indirect_inlining_edge = bp_unpack_value (&bp, 1);
   edge->speculative = bp_unpack_value (&bp, 1);
+  edge->specialized = bp_unpack_value (&bp, 1);
+  bool has_edge_spec_args = bp_unpack_value (&bp, 1);
   edge->lto_stmt_uid = stmt_id;
   edge->speculative_id = speculative_id;
   edge->inline_failed = inline_failed;
@@ -1512,6 +1555,25 @@ input_edge (class lto_input_block *ib, vec<symtab_node *> nodes,
 
       edge->indirect_info->num_speculative_call_targets
 	= bp_unpack_value (&bp, 16);
+    }
+
+  if (has_edge_spec_args)
+    {
+      unsigned len = streamer_read_uhwi (ib);
+      edge->spec_args = ggc_vec_alloc<cgraph_specialization_info> (len);
+      edge->spec_args_count = len;
+
+      for (unsigned i = 0; i < len; i++)
+	{
+	  cgraph_specialization_info *spec_info = &edge->spec_args[i];
+	  spec_info->arg_idx = streamer_read_uhwi (ib);
+	  spec_info->is_unsigned = streamer_read_hwi (ib);
+
+	  if (spec_info->is_unsigned)
+	    spec_info->cst.uval = streamer_read_uhwi (ib);
+	  else
+	    spec_info->cst.sval = streamer_read_hwi (ib);
+      }
     }
 }
 

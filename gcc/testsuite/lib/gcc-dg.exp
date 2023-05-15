@@ -24,6 +24,7 @@ load_lib scantree.exp
 load_lib scanltranstree.exp
 load_lib scanipa.exp
 load_lib scanwpaipa.exp
+load_lib scanltransipa.exp
 load_lib scanlang.exp
 load_lib timeout.exp
 load_lib timeout-dg.exp

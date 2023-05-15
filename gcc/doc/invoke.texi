@@ -526,6 +526,9 @@ Objective-C and Objective-C++ Dialects}.
 -finline-functions  -finline-functions-called-once  -finline-limit=@var{n} @gol
 -finline-small-functions -fipa-modref -fipa-cp  -fipa-cp-clone @gol
 -fipa-bit-cp  -fipa-vrp  -fipa-pta  -fipa-profile  -fipa-pure-const @gol
+-ftree-mem-gathering -fipa-field-merge -ftree-cond-sinking @gol
+-ftree-gen-builtin -fipa-field-reorder -fipa-dead-field-elimination @gol
+-fipa-struct-reorg -fipa-struct-dco -fmem-layout-trans=@var{n} @gol
 -fipa-reference  -fipa-reference-addressable @gol
 -fipa-stack-alignment  -fipa-icf  -fira-algorithm=@var{algorithm} @gol
 -flive-patching=@var{level} @gol
@@ -11386,6 +11389,13 @@ This pass is always skipped on architectures that do not have
 instructions to support this.  Enabled by default at @option{-O1} and
 higher on architectures that support this.
 
+@item -fskip-fma-heuristic
+@opindex fskip-fma-heuristic
+When avoid generating FMA chains that could be slow, heuristically skip
+specified number of FMA candidates and generates the rest.  This option
+is only effective when @option{avoid-fma-max-bits} is non-zero.  The
+default value is -1, which means all such FMAs are skipped.
+
 @item -fdce
 @opindex fdce
 Perform dead code elimination (DCE) on RTL@.
@@ -11472,6 +11482,11 @@ the link-time optimizer in local transformation mode.
 This option enables more devirtualization but
 significantly increases the size of streamed data. For this reason it is
 disabled by default.
+
+@item -fdevirtualize-fully
+@opindex fdevirtualize-fully
+Perform full devirtualization on virtual call when all targets are known under
+whole program assumption.
 
 @item -fexpensive-optimizations
 @opindex fexpensive-optimizations
@@ -11885,6 +11900,13 @@ higher.
 Discover which functions are pure or constant.
 Enabled by default at @option{-O1} and higher.
 
+@item -fipa-field-merge
+@opindex fipa-field-merge
+Merge the elements of different dynamic vectors with the same size into one
+vector element, which can improve cache locality if the elements of the same
+index of different dynamic vectors are accessed frequently together. This is
+enabled by default if -fmem-layout-trans is enabled.
+
 @item -fipa-reference
 @opindex fipa-reference
 Discover which static variables do not escape the
@@ -11900,6 +11922,31 @@ Enabled by default at @option{-O1} and higher.
 @opindex fipa-stack-alignment
 Reduce stack alignment on call sites if possible.
 Enabled by default.
+
+@item -fipa-struct-reorg
+@opindex fipa-struct-reorg
+Perform structure reorganization optimization, which changes C-like structures
+layout in order to better utilize spatial locality.  This transformation is
+effective for programs containing arrays of structures.  This is enabled by
+default if -fmem-layout-trans is enabled.
+
+@item -fipa-struct-dco
+@opindex fipa-struct-dco
+Perform structure data caching optimizations, which heuristically caches hot
+data fields using less memory.  Some dynamic checking conditions at run-time
+might be introduced to switch between hot and cold memory space. This is
+enabled by default if -fmem-layout-trans is enabled.
+
+@item -fipa-field-reorder
+@opindex fipa-field-reorder
+Reorder struct fields in type size descending order with the data
+padding removed to reduce memory usage. This is enabled by default if
+-fmem-layout-trans is enabled.
+
+@item -fipa-dead-field-elimination
+@opindex fipa-dead-field-elimination
+Eliminate struct fields that are not used.  This is enabled by default if
+-fmem-layout-trans is enabled.
 
 @item -fipa-pta
 @opindex fipa-pta
@@ -11970,6 +12017,11 @@ works on different levels and thus the optimizations are not same - there are
 equivalences that are found only by GCC and equivalences found only by Gold.
 
 This flag is enabled by default at @option{-O2} and @option{-Os}.
+
+@item -fipa-cond-sinking
+@opindex fipa-cond-sinking
+Perform condition sinking optimization in IPA pass. This is enabled by default
+if -fmem-layout-trans is enabled.
 
 @item -flive-patching=@var{level}
 @opindex flive-patching
@@ -12051,6 +12103,12 @@ currently enabled, but may be enabled by @option{-O2} in the future.
 @opindex ftree-sink
 Perform forward store motion on trees.  This flag is
 enabled by default at @option{-O1} and higher.
+
+@item -ftree-cond-sinking
+@opindex ftree-cond-sinking
+CSO (Condition Sinking Optimization) is to improve performance by sinking
+expensive if-condition calculations to late stage. The prerequisite is the
+if-condition doesn't affect any data hazard after the sinking operation.
 
 @item -ftree-bit-ccp
 @opindex ftree-bit-ccp
@@ -12186,6 +12244,23 @@ limit the ability to debug an optimized program compiled with
 @option{-fno-var-tracking-assignments}.  In the negated form, this flag
 prevents SSA coalescing of user variables.  This option is enabled by
 default if optimization is enabled, and it does very little otherwise.
+
+@item -ftree-mem-gathering
+@opindex ftree-mem-gathering
+When traversing a linked list or manipulating discrete arrays, the loop might
+contain multiple indrect memory accesses, which could trigger inefficient
+multi-way hardware prefetching, thus making cpu cache hit rate drop.
+
+For nested loops, if the indirect memory accesses inside inner loop remain
+unchanged in each iteration of outer loop, dynamically gather the indirect
+data into a sequential memory region when the first access in the inner loop
+takes place.  In this way the hardware prefetching can be reduced, and cpu
+cache hit rate can be improved.
+
+@item -ftree-gen-builtin
+@opindex ftree-gen-builtin
+Generate builtin functions for typical peephole patterns. For example, use
+__builtin_ctz to help a simple byte comparison loop.
 
 @item -ftree-loop-if-convert
 @opindex ftree-loop-if-convert
@@ -12444,6 +12519,27 @@ checks like array bound checks and null pointer checks.  This is
 enabled by default at @option{-O2} and higher.  Null pointer check
 elimination is only done if @option{-fdelete-null-pointer-checks} is
 enabled.
+
+@item -fmem-layout-trans
+@itemx -fmem-layout-trans=@var{n}
+@opindex fmem-layout-trans
+@opindex fno-mem-layout-trans
+Enable memory layout transformation to improve cache locality and memory
+bandwidth. Use @var{n} to specify different optimization level.  This
+optimization is more effective when -fLTO is used.
+
+@table @gcctabopt
+@item -fmem-layout-trans=0
+Disable memory layout transformations.  This is the same as specifying
+-fno-mem-layout-trans.
+@item -fmem-layout-trans=1
+Enable basic memory layout transformations such as struct field reordering,
+struct field merging, and struct reorg.
+@item -fmem-layout-trans=2
+Enable more memory layout transformations such as struct data caching, which
+stores hot data in a smaller memory space.  This is the default optimization
+level.
+@end table
 
 @item -fsplit-paths
 @opindex fsplit-paths
@@ -13771,6 +13867,15 @@ In each case, the @var{value} is an integer.  The following choices
 of @var{name} are recognized for all targets:
 
 @table @gcctabopt
+@item struct-reorg-cold-struct-ratio
+The threshold ratio (as a percentage) between a structure frequency
+and the frequency of the hottest structure in the program.  This parameter
+is used by struct-reorg optimization enabled by @option{-fipa-struct-reorg}.
+We say that if the ratio of a structure frequency, calculated by profiling,
+to the hottest structure frequency in the program is less than this
+parameter, then structure reorganization is not applied to this structure.
+The default is 10.
+
 @item predictable-branch-outcome
 When branch is predicted to be taken with probability lower than this threshold
 (in percent), then it is considered well predictable.
@@ -14814,6 +14919,11 @@ Set the maximum number of instructions executed in parallel in
 reassociated tree. This parameter overrides target dependent
 heuristics used by default if has non zero value.
 
+@item op-count-prefer-reassoc
+Set the minimum number of operators in a list, when reassociation is
+preferred (than inserting as much as FMA as possible).  If 0, always
+insert FMA as much as possible.
+
 @item sched-pressure-algorithm
 Choose between the two available implementations of
 @option{-fsched-pressure}.  Algorithm 1 is the original implementation
@@ -15195,6 +15305,26 @@ Specify mode of OpenACC privatization diagnostics for
 With @option{--param=openacc-privatization=quiet}, don't diagnose.
 This is the current default.
 With @option{--param=openacc-privatization=noisy}, do diagnose.
+
+@item mgo-max-dep-load-level
+The maximum level of dependent load that memory gathering optimization could
+find starting for a loop iterator.
+
+@item mgo-max-cache-elem-size
+The maximum size (in bytes) for cache data element used to hold values of
+loads in each loop iteration.
+
+@item mgo-min-cache-array-length
+The minimum element number of cache-array to trigger memory gathering
+optimization.  It must be less than or equal to mgo-max-cache-array-length.
+
+@item mgo-max-cache-array-length
+The maximum element number of cache-array, above which memory gathering
+optimization will be suppressed.
+
+@item mgo-runtime-alias-check
+Enable runtime alias check for dependent load in memory gathering optimization,
+which could archive preciser result at the cost of some runtime effort.
 
 @end table
 

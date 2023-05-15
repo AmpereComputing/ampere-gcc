@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-forwprop3" } */
+/* { dg-options "-O2 -fdump-tree-forwprop5" } */
 
 unsigned short
 test1 (unsigned short a)
@@ -9,7 +9,7 @@ test1 (unsigned short a)
   a |= 0x8000; /* Simplify to ((a >> 1) ^ 0xa001).  */
   return a;
 }
-/* { dg-final { scan-tree-dump "\\^ 40961" "forwprop3" } } */
+/* { dg-final { scan-tree-dump "\\^ 40961" "forwprop5" } } */
 
 unsigned short
 test2 (unsigned short a)
@@ -19,7 +19,7 @@ test2 (unsigned short a)
   a ^= 0x0001; /* Simplify to ((a << 1) | 0x8005).  */
   return a;
 }
-/* { dg-final { scan-tree-dump "\\| 32773" "forwprop3" } } */
+/* { dg-final { scan-tree-dump "\\| 32773" "forwprop5" } } */
 
 unsigned short
 test3 (unsigned short a)
@@ -29,7 +29,7 @@ test3 (unsigned short a)
   a |= 0xc031; /* Simplify to ((a & 0xd123) | 0xe071).  */
   return a;
 }
-/* { dg-final { scan-tree-dump "\\| 57457" "forwprop3" } } */
+/* { dg-final { scan-tree-dump "\\| 57457" "forwprop5" } } */
 
 unsigned short
 test4 (unsigned short a)
@@ -39,7 +39,7 @@ test4 (unsigned short a)
   a |= 0x8000;
   return a;
 }
-/* { dg-final { scan-tree-dump "\\^ 49153" "forwprop3" } } */
+/* { dg-final { scan-tree-dump "\\^ 49153" "forwprop5" } } */
 
 unsigned short
 test5 (unsigned short a)
@@ -49,8 +49,8 @@ test5 (unsigned short a)
   a |= 0x8001; /* Only move shift inward: (((a >> 1) ^ 0x4001) | 0x8001).  */
   return a;
 }
-/* { dg-final { scan-tree-dump "\\^ 16385" "forwprop3" } } */
-/* { dg-final { scan-tree-dump "\\| 32769" "forwprop3" } } */
+/* { dg-final { scan-tree-dump "\\^ 16385" "forwprop5" } } */
+/* { dg-final { scan-tree-dump "\\| 32769" "forwprop5" } } */
 
 short
 test6 (short a)
@@ -59,7 +59,7 @@ test6 (short a)
   a >>= 2;
   return a;
 }
-/* { dg-final { scan-tree-dump "\\& 8191" "forwprop3" } } */
+/* { dg-final { scan-tree-dump "\\& 8191" "forwprop5" } } */
 
 short
 test7 (short a)
@@ -68,4 +68,4 @@ test7 (short a)
   a >>= 2;
   return a;
 }
-/* { dg-final { scan-tree-dump "\\& -7169" "forwprop3" } } */
+/* { dg-final { scan-tree-dump "\\& -7169" "forwprop5" } } */

@@ -268,6 +268,10 @@ symtab_node::needed_p (void)
   if (TREE_PUBLIC (decl) && !DECL_COMDAT (decl))
     return true;
 
+  /* Always output vtable for full devirtualization.  */
+  if (flag_devirtualize_fully && DECL_VIRTUAL_P (decl))
+    return true;
+
   return false;
 }
 
@@ -1289,11 +1293,33 @@ analyze_functions (bool first_time)
 		  enqueue_node (origin_node);
 		}
 	    }
-	  else
+	  else if (varpool_node *vnode = dyn_cast <varpool_node *> (node))
 	    {
-	      varpool_node *vnode = dyn_cast <varpool_node *> (node);
-	      if (vnode && vnode->definition && !vnode->analyzed)
+	      if (vnode->definition && !vnode->analyzed)
 		vnode->analyze ();
+
+	      /* If a class with virtual base is only instantiated as
+		 subobjects of derived classes, and has no complete object in
+		 compilation unit, merely construction vtables will be involved,
+		 its primary vtable is really not needed, and subject to being
+		 removed.  So once a vtable node is encountered, for all
+		 polymorphic base classes of the vtable's context class, always
+		 force generation of primary vtable nodes when full
+		 devirtualization is enabled.  */
+	      if (flag_devirtualize_fully && DECL_VIRTUAL_P (vnode->decl)
+		  && !DECL_EXTERNAL (vnode->decl) && vnode->definition)
+		{
+		  tree binfo = TYPE_BINFO (DECL_CONTEXT (vnode->decl));
+
+		  gcc_assert (binfo);
+		  for (unsigned i = 0; i < BINFO_N_BASE_BINFOS (binfo); i++)
+		    {
+		      tree base_type = TREE_TYPE (BINFO_BASE_BINFO (binfo, i));
+
+		      if (tree base_vtable = get_type_vtable (base_type))
+			varpool_node::get_create (base_vtable);
+		    }
+		}
 	    }
 
 	  if (node->same_comdat_group)
@@ -2217,7 +2243,13 @@ ipa_passes (void)
   if (!flag_ltrans
       && ((in_lto_p && flag_incremental_link != INCREMENTAL_LINK_LTO)
 	  || !flag_lto || flag_fat_lto_objects))
-    execute_ipa_pass_list (passes->all_regular_ipa_passes);
+    {
+      execute_ipa_pass_list (passes->all_regular_ipa_passes);
+
+      if (in_lto_p && flag_wpt && !seen_error ())
+	execute_regular_ipa_post_whole_program_transforms ();
+    }
+
   invoke_plugin_callbacks (PLUGIN_ALL_IPA_PASSES_END, NULL);
 
   bitmap_obstack_release (NULL);
@@ -2594,4 +2626,39 @@ cgraph_node::create_wrapper (cgraph_node *target)
   /* Inline summary set-up.  */
   analyze ();
   inline_analyze_function (this);
+}
+
+namespace {
+
+const pass_data pass_data_ipa_wpt_local_optimizations =
+{
+  SIMPLE_IPA_PASS, /* type */
+  "ipa_wpt_local_optimizations", /* name */
+  OPTGROUP_NONE, /* optinfo_flags */
+  TV_NONE, /* tv_id */
+  0, /* properties_required */
+  0, /* properties_provided */
+  0, /* properties_destroyed */
+  0, /* todo_flags_start */
+  0, /* todo_flags_finish */
+};
+
+class pass_ipa_wpt_local_optimizations : public simple_ipa_opt_pass
+{
+public:
+  pass_ipa_wpt_local_optimizations (gcc::context *ctxt)
+    : simple_ipa_opt_pass (pass_data_ipa_wpt_local_optimizations, ctxt)
+  {}
+
+  /* opt_pass methods: */
+  opt_pass *clone () { return new pass_ipa_wpt_local_optimizations (m_ctxt); }
+
+}; // class pass_ipa_wpt_local_optimizations
+
+} // anon namespace
+
+simple_ipa_opt_pass *
+make_pass_ipa_wpt_local_optimizations (gcc::context *ctxt)
+{
+  return new pass_ipa_wpt_local_optimizations (ctxt);
 }

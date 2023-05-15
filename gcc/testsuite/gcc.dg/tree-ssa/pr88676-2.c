@@ -1,7 +1,7 @@
 /* PR tree-optimization/88676 */
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-phiopt2" } */
-/* { dg-final { scan-tree-dump-not " = PHI <" "phiopt2" { target le } } } */
+/* { dg-options "-O2 -fdump-tree-phiopt3" } */
+/* { dg-final { scan-tree-dump-not " = PHI <" "phiopt3" { target le } } } */
 
 struct foo1 {
   int i:1;

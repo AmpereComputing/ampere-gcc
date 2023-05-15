@@ -1451,10 +1451,26 @@ OBJS = \
 	incpath.o \
 	init-regs.o \
 	internal-fn.o \
+	ipa-type-escape-analysis.o \
+	ipa-lto-utils.o \
+	ipa-sizeof.o \
+	ipa-calloc-type-specialization.o \
+	ipa-void-ptr-param-specialization.o \
+	ipa-alignment-analysis-and-transformation.o \
+	ipa-eliminate-cast.o \
+	ipa-retyper.o \
+	ipa-dfe.o \
+	ipa-localize-var.o \
+	ipa-field-reorder.o \
+	ipa-field-merge.o \
+	ipa-array-dse.o \
+	ipa-struct-opt/ipa-struct-reorg.o \
+	ipa-struct-opt/ipa-struct-dco.o \
 	ipa-cp.o \
 	ipa-sra.o \
 	ipa-devirt.o \
 	ipa-fnsummary.o \
+	ipa-guarded-deref.o \
 	ipa-polymorphic-call.o \
 	ipa-split.o \
 	ipa-inline.o \
@@ -1623,6 +1639,7 @@ OBJS = \
 	tree-inline.o \
 	tree-into-ssa.o \
 	tree-iterator.o \
+	tree-gen-builtin.o \
 	tree-loop-distribution.o \
 	tree-nested.o \
 	tree-nrv.o \
@@ -1641,6 +1658,7 @@ OBJS = \
 	tree-ssa-ccp.o \
 	tree-ssa-coalesce.o \
 	tree-ssa-copy.o \
+        tree-ssa-cso.o \
 	tree-ssa-dce.o \
 	tree-ssa-dom.o \
 	tree-ssa-dse.o \
@@ -1649,6 +1667,7 @@ OBJS = \
 	tree-ssa-live.o \
 	tree-ssa-loop-ch.o \
 	tree-ssa-loop-im.o \
+	tree-ssa-loop-mgo.o \
 	tree-ssa-loop-ivcanon.o \
 	tree-ssa-loop-ivopts.o \
 	tree-ssa-loop-manip.o \
@@ -1657,6 +1676,7 @@ OBJS = \
 	tree-ssa-loop-split.o \
 	tree-ssa-loop-unswitch.o \
 	tree-ssa-loop.o \
+	tree-ssa-lro.o \
 	tree-ssa-math-opts.o \
 	tree-ssa-operands.o \
 	gimple-range-path.o \

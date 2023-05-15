@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-dse2-details"  } */
+/* { dg-options "-O2 -fdump-tree-dse3-details"  } */
 volatile int *ptr;
 struct a {
 	int a,b,c;
@@ -28,4 +28,4 @@ main(void)
 }
 /* Only DSE2 is tracking live bytes needed to figure out that store to c is
    also dead above.  */
-/* { dg-final { scan-tree-dump "Deleted dead store: init" "dse2" } } */
+/* { dg-final { scan-tree-dump "Deleted dead store: init" "dse3" } } */

@@ -6,7 +6,7 @@
 
 /* { dg-do compile } */
 /* { dg-options "-O2 -fno-tree-fre -fdisable-tree-evrp -fno-thread-jumps -fdump-tree-vrp1-details" } */
-/* { dg-additional-options "-fdisable-tree-ethread -fdisable-tree-thread1" } */
+/* { dg-additional-options "-fdisable-tree-ethread1 -fdisable-tree-thread1" } */
 
 int
 foo (int a)

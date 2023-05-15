@@ -4589,6 +4589,9 @@ finish_offsetof (tree object_ptr, tree expr, location_t loc)
     warning_at (loc, OPT_Winvalid_offsetof, "%<offsetof%> within "
 		"non-standard-layout type %qT is conditionally-supported",
 		TREE_TYPE (TREE_TYPE (object_ptr)));
+  if (TREE_CODE (TREE_TYPE (TREE_TYPE (object_ptr))) == RECORD_TYPE)
+    TYPE_OFFSETOF_P (TREE_TYPE (TREE_TYPE (object_ptr))) = 1;
+
   return fold_offsetof (expr);
 }
 

@@ -1077,6 +1077,9 @@ lto_symtab_merge_symbols (void)
 	      node->decl->decl_with_vis.symtab_node = node;
 	    }
 	}
+
+      if (flag_devirtualize)
+	identify_whole_program_local_types ();
     }
 }
 

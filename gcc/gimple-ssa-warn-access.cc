@@ -2193,9 +2193,8 @@ pass_waccess::set_pass_param (unsigned int n, bool early)
 bool
 pass_waccess::gate (function *)
 {
-  return (warn_free_nonheap_object
-	  || warn_mismatched_alloc
-	  || warn_mismatched_new_delete);
+  return warn_free_nonheap_object || warn_mismatched_alloc
+	 || warn_mismatched_new_delete;
 }
 
 /* Initialize ALLOC_OBJECT_SIZE_LIMIT based on the -Walloc-size-larger-than=

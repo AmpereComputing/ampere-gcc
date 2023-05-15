@@ -340,6 +340,11 @@ fld_simplified_type (tree t, class free_lang_data_d *fld)
 {
   if (!t)
     return t;
+  /* Simplify type will cause that struct A and struct A within
+     struct B are different type pointers, so skip it in structure
+     optimizations.  */
+  if (flag_ipa_type_escape_analysis)
+    return t;
   if (POINTER_TYPE_P (t))
     return fld_incomplete_type_of (t, fld);
   /* FIXME: This triggers verification error, see PR88140.  */

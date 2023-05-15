@@ -1622,6 +1622,8 @@ int_cst_hasher::hash (tree x)
   for (i = 0; i < TREE_INT_CST_NUNITS (t); i++)
     code = iterative_hash_host_wide_int (TREE_INT_CST_ELT(t, i), code);
 
+  code = iterative_hash (&TYPE_SIZEOF_TYPE (t), sizeof (TYPE_SIZEOF_TYPE (t)), code);
+
   return code;
 }
 
@@ -1636,7 +1638,8 @@ int_cst_hasher::equal (tree x, tree y)
 
   if (TREE_TYPE (xt) != TREE_TYPE (yt)
       || TREE_INT_CST_NUNITS (xt) != TREE_INT_CST_NUNITS (yt)
-      || TREE_INT_CST_EXT_NUNITS (xt) != TREE_INT_CST_EXT_NUNITS (yt))
+      || TREE_INT_CST_EXT_NUNITS (xt) != TREE_INT_CST_EXT_NUNITS (yt)
+      || TYPE_SIZEOF_TYPE (xt) != TYPE_SIZEOF_TYPE (yt))
     return false;
 
   for (int i = 0; i < TREE_INT_CST_NUNITS (xt); i++)
@@ -1972,6 +1975,8 @@ cache_integer_cst (tree t, bool might_duplicate ATTRIBUTE_UNUSED)
 		ix = tree_to_shwi (t) + 1;
 	    }
 	}
+      if (TYPE_SIZEOF_TYPE (t))
+	      ix = -1;
       break;
 
     case ENUMERAL_TYPE:

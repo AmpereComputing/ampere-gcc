@@ -332,6 +332,12 @@ static void decode_d_option (const char *arg, struct gcc_options *opts,
 			     location_t loc, diagnostic_context *dc);
 static void set_unsafe_math_optimizations_flags (struct gcc_options *opts,
 						 int set);
+static void set_ipa_field_merge_flags (struct gcc_options *opts,
+				       struct gcc_options *opts_set,
+				       int set);
+static void set_mem_layout_trans_flags (struct gcc_options *opts,
+					struct gcc_options *opts_set,
+					int set);
 static void enable_warning_as_error (const char *arg, int value,
 				     unsigned int lang_mask,
 				     const struct cl_option_handlers *handlers,
@@ -674,11 +680,14 @@ static const struct default_options default_options_table[] =
     { OPT_LEVELS_3_PLUS, OPT_fpredictive_commoning, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_fsplit_loops, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_fsplit_paths, NULL, 1 },
+    { OPT_LEVELS_3_PLUS, OPT_ftree_lro, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_ftree_loop_distribution, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_ftree_partial_pre, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_funswitch_loops, NULL, 1 },
     { OPT_LEVELS_3_PLUS, OPT_fvect_cost_model_, NULL, VECT_COST_MODEL_DYNAMIC },
     { OPT_LEVELS_3_PLUS, OPT_fversion_loops_for_strides, NULL, 1 },
+    { OPT_LEVELS_3_PLUS, OPT_fipa_guarded_deref, NULL, 1 },
+    { OPT_LEVELS_3_PLUS, OPT_fipa_guarded_specialization, NULL, 1 },
 
     /* -O3 parameters.  */
     { OPT_LEVELS_3_PLUS, OPT__param_max_inline_insns_auto_, NULL, 30 },
@@ -2861,6 +2870,24 @@ common_handle_option (struct gcc_options *opts,
       set_unsafe_math_optimizations_flags (opts, value);
       break;
 
+    case OPT_fipa_field_reorder:
+      SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_field_reorder, value);
+      break;
+
+    case OPT_fipa_dead_field_elimination:
+      SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_dead_field_elimination,
+			   value);
+      break;
+
+    case OPT_fipa_field_merge:
+      set_ipa_field_merge_flags (opts, opts_set, value);
+      break;
+
+    case OPT_fmem_layout_trans:
+    case OPT_fmem_layout_trans_:
+      set_mem_layout_trans_flags (opts, opts_set, value);
+      break;
+
     case OPT_ffixed_:
       /* Deferred.  */
       break;
@@ -3303,6 +3330,55 @@ fast_math_flags_struct_set_p (struct cl_optimization *opt)
 	  && opt->x_flag_finite_math_only
 	  && !opt->x_flag_signed_zeros
 	  && !opt->x_flag_errno_math);
+}
+
+/* The following routines are useful in setting all the flags that
+   -fipa_filed_merge implies.  */
+static void
+set_ipa_field_merge_flags (struct gcc_options *opts,
+			   struct gcc_options *opts_set,
+			   int set)
+{
+  SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_field_merge, set);
+  SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_cond_sinking, set);
+}
+
+/* The following routines are useful in setting all the flags that
+   -fmem-layout-trans implies.  */
+static void
+set_mem_layout_trans_flags (struct gcc_options *opts,
+			   struct gcc_options *opts_set,
+			   int set)
+{
+  int val = (set == 0) ? 0 : 1;
+
+  if (set)
+    SET_OPTION_IF_UNSET (opts, opts_set, flag_devirtualize_fully, 1);
+
+  SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_type_escape_analysis, val);
+
+  SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_void_ptr_param_specialization,
+		       val);
+  SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_calloc_type_specialization,
+		       val);
+  SET_OPTION_IF_UNSET (opts, opts_set,
+		       flag_ipa_alignment_analysis_and_transformation, val);
+  SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_eliminate_cast, val);
+  SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_retyper, val);
+
+  SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_sizeof, val);
+
+  SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_field_reorder, val);
+
+  SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_struct_reorg, val);
+
+  if (opts->x_flag_mem_layout_trans == 2)
+    {
+      SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_struct_dco, val);
+      SET_OPTION_IF_UNSET (opts, opts_set, flag_ipa_dco_clone_data, val);
+    }
+
+  set_ipa_field_merge_flags (opts, opts_set, val);
 }
 
 /* Handle a debug output -g switch for options OPTS

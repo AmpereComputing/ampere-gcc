@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O -fdump-tree-phiopt2" } */
+/* { dg-options "-O -fdump-tree-phiopt3" } */
 
 template <class T>
 static inline const T&
@@ -13,4 +13,4 @@ int test_min_ref (int x, int y)
   return min_ref (x, y);
 }
 
-/* { dg-final { scan-tree-dump "MIN_EXPR" "phiopt2" } } */
+/* { dg-final { scan-tree-dump "MIN_EXPR" "phiopt3" } } */

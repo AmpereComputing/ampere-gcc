@@ -8181,7 +8181,17 @@ c_parser_unary_expression (c_parser *parser)
       c_parser_consume_token (parser);
       op = c_parser_cast_expression (parser, NULL);
       mark_exp_read (op.value);
-      return parser_build_unary_op (op_loc, ADDR_EXPR, op);
+      ret = parser_build_unary_op (op_loc, ADDR_EXPR, op);
+      /* Set the offsetof flag for exprs like &base->field.  */
+      if (handled_component_p (ret.value)
+	  && TREE_CODE (TREE_OPERAND (ret.value, 0)) == COMPONENT_REF)
+	{
+	  tree base_type
+	    = TREE_TYPE (TREE_OPERAND ((TREE_OPERAND (ret.value, 0)), 0));
+	  if (base_type && TREE_CODE (base_type) == RECORD_TYPE)
+	    TYPE_OFFSETOF_P (base_type) = 1;
+	}
+      return ret;
     case CPP_MULT:
       {
 	c_parser_consume_token (parser);
@@ -9295,6 +9305,9 @@ c_parser_postfix_expression (c_parser *parser)
 	    location_t end_loc = c_parser_peek_token (parser)->get_finish ();
 	    c_parser_skip_until_found (parser, CPP_CLOSE_PAREN,
 				       "expected %<)%>");
+	    if (TREE_CODE (type) == RECORD_TYPE)
+	      TYPE_OFFSETOF_P (type) = 1;
+
 	    expr.value = fold_offsetof (offsetof_ref);
 	    set_c_expr_source_range (&expr, loc, end_loc);
 	  }

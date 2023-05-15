@@ -431,10 +431,10 @@ gimple_register_canonical_type_1 (tree t, hashval_t hash)
 	  slot = htab_find_slot_with_hash (gimple_canonical_types, t, hash,
 					   NO_INSERT);
 	}
-      if (slot && !TYPE_CXX_ODR_P (*(tree *)slot))
+      if (slot && !TYPE_CXX_ODR_P (*(tree *)slot)
+	  && (!flag_ltrans || !TYPE_ARTIFICIAL (*(tree *)slot)))
 	{
 	  tree nonodr = *(tree *)slot;
-	  gcc_checking_assert (!flag_ltrans);
 	  if (symtab->dump_file)
 	    {
 	      fprintf (symtab->dump_file,

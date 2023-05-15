@@ -150,6 +150,8 @@ enum gf_mask {
     GF_CALL_BY_DESCRIPTOR	= 1 << 10,
     GF_CALL_NOCF_CHECK		= 1 << 11,
     GF_CALL_FROM_NEW_OR_DELETE	= 1 << 12,
+    GF_CALL_CONST		= 1 << 13,
+    GF_CALL_PURE		= 1 << 14,
     GF_OMP_PARALLEL_COMBINED	= 1 << 0,
     GF_OMP_TASK_TASKLOOP	= 1 << 0,
     GF_OMP_TASK_TASKWAIT	= 1 << 1,
@@ -367,7 +369,10 @@ struct GTY((tag("GSS_CALL")))
     enum internal_fn GTY ((tag ("GF_CALL_INTERNAL"))) internal_fn;
   } u;
 
-  /* [ WORD 15 ]
+  /* [ WORD 15 ] */
+  tree type_sizeof_type;
+
+  /* [ WORD 16 ]
      Operand vector.  NOTE!  This must always be the last field
      of this structure.  In particular, this means that this
      structure cannot be embedded inside another one.  */
@@ -2988,6 +2993,32 @@ gimple_call_lhs_ptr (gimple *gs)
 }
 
 
+static inline void
+gimple_call_set_type_sizeof_type (gcall *gs, tree t)
+{
+  gs->type_sizeof_type = t;
+}
+
+static inline void
+gimple_call_set_type_sizeof_type (gimple *gs, tree t)
+{
+  gcall *gc = GIMPLE_CHECK2<gcall *> (gs);
+  gimple_call_set_type_sizeof_type (gc, t);
+}
+
+static inline tree
+gimple_call_get_type_sizeof_type (gcall *gs)
+{
+  return gs->type_sizeof_type;
+}
+
+static inline tree
+gimple_call_get_type_sizeof_type (gimple *gs)
+{
+  gcall *gc = GIMPLE_CHECK2<gcall *> (gs);
+  return gimple_call_get_type_sizeof_type (gc);
+}
+
 /* Set LHS to be the LHS operand of call statement GS.  */
 
 static inline void
@@ -3567,6 +3598,32 @@ static inline bool
 gimple_call_by_descriptor_p (gcall *s)
 {
   return (s->subcode & GF_CALL_BY_DESCRIPTOR) != 0;
+}
+
+/* If IS_CONST is true, GIMPLE_CALL S is an indirect const call, and also
+   implies it is not LOOPING_CONST_OR_PURE.  */
+
+static inline void
+gimple_call_set_const (gcall *s, bool is_const)
+{
+  gcc_assert (!gimple_call_fndecl (s));
+  if (is_const)
+    s->subcode |= GF_CALL_CONST;
+  else
+    s->subcode &= ~GF_CALL_CONST;
+}
+
+/* If PURE is true, GIMPLE_CALL S is an indirect pure call, and also implies
+   it is not LOOPING_CONST_OR_PURE.  */
+
+static inline void
+gimple_call_set_pure (gcall *s, bool pure)
+{
+  gcc_assert (!gimple_call_fndecl (s));
+  if (pure)
+    s->subcode |= GF_CALL_PURE;
+  else
+    s->subcode &= ~GF_CALL_PURE;
 }
 
 /* Copy all the GF_CALL_* flags from ORIG_CALL to DEST_CALL.  */

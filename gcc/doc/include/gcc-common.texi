@@ -58,7 +58,7 @@
 @c been placed, and before any authors are placed.
 @macro versionsubtitle
 @ifclear DEVELOPMENT
-@subtitle For @sc{gcc} version @value{version-GCC}
+@subtitle For Ampere @sc{gcc} version @value{version-GCC}
 @end ifclear
 @ifset DEVELOPMENT
 @subtitle For @sc{gcc} version @value{version-GCC} (pre-release)

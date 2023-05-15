@@ -53,6 +53,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "debug.h"
 #include "tree-vector-builder.h"
 #include "vec-perm-indices.h"
+#include "ipa-lto-utils.h"
 
 cpp_reader *parse_in;		/* Declared in c-pragma.h.  */
 
@@ -3940,10 +3941,29 @@ c_sizeof_or_alignof_type (location_t loc,
 	value = size_int (TYPE_ALIGN_UNIT (type));
     }
 
+  /* Mark sizeof use on record/union types.  */
+  if (RECORD_OR_UNION_TYPE_P (type) && is_sizeof && flag_ipa_sizeof && lang_c_p ())
+    {
+      TYPE_SIZEOF_P (type) = 1;
+      tree mtype = TYPE_MAIN_VARIANT (type);
+      for (tree variant = mtype; variant; variant = TYPE_NEXT_VARIANT (variant))
+      {
+        TYPE_SIZEOF_P (variant) = 1;
+      }
+    }
+
   /* VALUE will have the middle-end integer type sizetype.
      However, we should really return a value of type `size_t',
      which is just a typedef for an ordinary integer type.  */
   value = fold_convert_loc (loc, size_type_node, value);
+
+  /* Make sure to mark the this node as linked to the original
+     type sent to sizeof. */
+  if (RECORD_OR_UNION_TYPE_P (type) && is_sizeof && flag_ipa_sizeof && lang_c_p ())
+    {
+      value = copy_node (value);
+      TYPE_SIZEOF_TYPE (value) = type;
+    }
 
   return value;
 }

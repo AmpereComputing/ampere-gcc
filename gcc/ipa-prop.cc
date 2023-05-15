@@ -157,6 +157,7 @@ static GTY ((cache)) hash_table<ipa_vr_ggc_hash_traits> *ipa_vr_hash_table;
 
 /* Holders of ipa cgraph hooks: */
 static struct cgraph_node_hook_list *function_insertion_hook_holder;
+static struct cgraph_edge_hook_list *edge_removal_hook_holder;
 
 /* Description of a reference to an IPA constant.  */
 struct ipa_cst_ref_desc
@@ -4380,6 +4381,18 @@ ipcp_transformation_initialize (void)
 void
 ipcp_free_transformation_sum (void)
 {
+  if (callsite_data)
+    {
+      delete callsite_data;
+      callsite_data = NULL;
+    }
+
+  if (callsite_data2)
+    {
+      delete callsite_data2;
+      callsite_data2 = NULL;
+    }
+
   if (!ipcp_transformation_sum)
     return;
 
@@ -4539,6 +4552,13 @@ ipa_add_new_function (cgraph_node *node, void *data ATTRIBUTE_UNUSED)
     ipa_analyze_node (node);
 }
 
+static void
+ipa_remove_edge (cgraph_edge *edge, void *data ATTRIBUTE_UNUSED)
+{
+  if (callsite_data2)
+    callsite_data2->remove (edge);
+}
+
 /* Hook that is called by summary when a node is duplicated.  */
 
 void
@@ -4609,6 +4629,15 @@ ipa_register_cgraph_hooks (void)
 
   function_insertion_hook_holder =
       symtab->add_cgraph_insertion_hook (&ipa_add_new_function, NULL);
+
+  /* This is for ipa alignment analysis, which would use cgraph_edge as map
+     key to data repository.  Since cgraph_edge could be changed during
+     ipa optimizations, we have to always keep it in symtab edge_removal_hook
+     so as to adjust alignment data just-in-time.  */
+  if (!edge_removal_hook_holder
+      && flag_ipa_alignment_analysis_and_transformation)
+    edge_removal_hook_holder =
+      symtab->add_edge_removal_hook (&ipa_remove_edge, NULL);
 }
 
 /* Unregister our cgraph hooks if they are not already there.  */
@@ -5346,8 +5375,6 @@ ipa_prop_read_jump_functions (void)
   struct lto_file_decl_data *file_data;
   unsigned int j = 0;
 
-  ipa_check_create_node_params ();
-  ipa_check_create_edge_args ();
   ipa_register_cgraph_hooks ();
 
   while ((file_data = file_data_vec[j++]))
@@ -5508,6 +5535,7 @@ read_ipcp_transformation_info (lto_input_block *ib, cgraph_node *node,
     }
 }
 
+
 /* Write all aggregate replacement for nodes in set.  */
 
 void
@@ -5518,6 +5546,11 @@ ipcp_write_transformation_summaries (void)
   unsigned int count = 0;
   lto_symtab_encoder_iterator lsei;
   lto_symtab_encoder_t encoder;
+
+  /* Since ipcp transformation is done inside WPT stage, the summary would not
+     be used in LTRANS.  */
+  if (flag_wpt)
+    return;
 
   ob = create_output_block (LTO_section_ipcp_transform);
   encoder = ob->decl_state->symtab_node_encoder;
@@ -5591,6 +5624,11 @@ read_replacements_section (struct lto_file_decl_data *file_data,
 void
 ipcp_read_transformation_summaries (void)
 {
+  /* Since ipcp transformation is done inside WPT stage, the summary would not
+     be used in LTRANS.  */
+  if (flag_wpt)
+    return;
+
   struct lto_file_decl_data **file_data_vec = lto_get_file_decl_data ();
   struct lto_file_decl_data *file_data;
   unsigned int j = 0;
@@ -6030,6 +6068,32 @@ ipcp_transform_function (struct cgraph_node *node)
   struct ipa_func_body_info fbi;
   struct ipa_agg_replacement_value *aggval;
   int param_count;
+
+  if (callsite_data2)
+    {
+      for (auto i = callsite_data2->begin (); i != callsite_data2->end (); ++i)
+	{
+	  cgraph_edge *e = (*i).first;
+	  alignment_data d = (*i).second;
+	  cgraph_node *caller = e->caller;
+	  cgraph_node *callee = e->callee;
+
+	  if (dump_file)
+	    fprintf (dump_file, "%s -> %s, align = %d\n", caller->dump_name (),
+		     callee->dump_name (), d.alignment);
+
+	  while (caller->inlined_to)
+	    caller = caller->inlined_to;
+
+	  if (node != caller)
+	    continue;
+
+	  if (!node->alignment_data)
+	    node->alignment_data = new hash_map<symtab_node *, int> ();
+
+	  node->alignment_data->put (callee, d.alignment);
+	}
+    }
 
   gcc_checking_assert (cfun);
   gcc_checking_assert (current_function_decl);

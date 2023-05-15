@@ -1,4 +1,4 @@
-/* { dg-options "-O2 -fdump-tree-fre3-details"  } */
+/* { dg-options "-O2 -fdump-tree-fre5-details"  } */
 
 // A throwing dtor in C++98 mode changes the results.
 #if __cplusplus < 201100L
@@ -31,4 +31,4 @@ A::m_fn1 (UnicodeString &, int &p2, UErrorCode &) const
   return g;
 }
 
-/* { dg-final { scan-tree-dump-not "\\n  OBJ_TYPE_REF" "fre3"  } } */
+/* { dg-final { scan-tree-dump-not "\\n  OBJ_TYPE_REF" "fre5"  } } */

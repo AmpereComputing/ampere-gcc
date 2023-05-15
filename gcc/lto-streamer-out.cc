@@ -132,9 +132,24 @@ destroy_output_block (struct output_block *ob)
 static bool
 lto_variably_modified_type_p (tree type)
 {
-  return (in_lto_p
-	  ? TYPE_LANG_FLAG_0 (TYPE_MAIN_VARIANT (type))
-	  : variably_modified_type_p (type, NULL_TREE));
+  if (in_lto_p)
+    {
+      type = TYPE_MAIN_VARIANT (type);
+
+      if (flag_wpt && !TYPE_LANG_FLAG_7 (type))
+	{
+	  /* If type is not from lto serialization, its TYPE_LANG_FLAG_0 is
+	     not set.  So we need to explicitly check whether it is variably
+	     modified type.  Function body generation by WPT may create new
+	     types.  */
+	  TYPE_LANG_FLAG_0 (type) = variably_modified_type_p (type, NULL_TREE);
+	  TYPE_LANG_FLAG_7 (type) = 1;
+	}
+
+      return TYPE_LANG_FLAG_0 (type);
+    }
+
+  return variably_modified_type_p (type, NULL_TREE);
 }
 
 
@@ -437,7 +452,17 @@ get_symbol_initial_value (lto_symtab_encoder_t encoder, tree expr)
 	 scalar values.  */
       if (!(vnode = varpool_node::get (expr))
 	  || !lto_symtab_encoder_encode_initializer_p (encoder, vnode))
-        initial = error_mark_node;
+	{
+	  /* Even when a class is optimized away, devirtualization at LTRANS
+	     still needs to extract addresses of member virtual functions from
+	     initial value of vtable.  */
+	  if (flag_devirtualize_fully && flag_ltrans_devirtualize
+	      && flag_wpa && DECL_VIRTUAL_P (expr) && !DECL_EXTERNAL (expr))
+	    return initial;
+
+	  initial = error_mark_node;
+	}
+
       if (initial != error_mark_node)
 	{
 	  long max_size = 30;
@@ -723,7 +748,10 @@ DFS::DFS (struct output_block *ob, tree expr, bool ref_p, bool this_ref_p,
 
 	  if (TREE_CODE (expr) == INTEGER_CST
 	      && !TREE_OVERFLOW (expr))
+	  {
+	    //DFS_write_tree (ob, cstate, TYPE_SIZEOF_TYPE (expr), ref_p, ref_p);
 	    DFS_write_tree (ob, cstate, TREE_TYPE (expr), ref_p, ref_p);
+	  }
 	  else
 	    {
 	      DFS_write_tree_body (ob, expr, cstate, ref_p);

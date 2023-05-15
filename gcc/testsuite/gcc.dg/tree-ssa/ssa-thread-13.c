@@ -1,6 +1,6 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-ethread-details" } */
-/* { dg-final { scan-tree-dump "Registering jump thread" "ethread" } } */
+/* { dg-options "-O2 -fdump-tree-ethread1-details" } */
+/* { dg-final { scan-tree-dump "Registering jump thread" "ethread1" } } */
 
 typedef struct rtx_def *rtx;
 typedef const struct rtx_def *const_rtx;

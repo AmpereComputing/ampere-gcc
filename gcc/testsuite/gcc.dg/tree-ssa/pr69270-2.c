@@ -1,8 +1,8 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-dce2 -w" } */
+/* { dg-options "-O2 -fdump-tree-dce3 -w" } */
 
 /* The arithmetic using usecount should be gone.  */
-/* { dg-final { scan-tree-dump-times "usecount_\[0-9\]+ = usecount_\[0-9\]+ . 1;" 0 "dce2"} } */
+/* { dg-final { scan-tree-dump-times "usecount_\[0-9\]+ = usecount_\[0-9\]+ . 1;" 0 "dce3"} } */
 
 typedef union tree_node *tree;
 typedef union gimple_statement_d *gimple;

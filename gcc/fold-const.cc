@@ -1195,10 +1195,30 @@ int_const_binop (enum tree_code code, const_tree arg1, const_tree arg2,
 	   || !poly_int_tree_p (arg2)
 	   || !poly_int_binop (poly_res, code, arg1, arg2, sign, &overflow))
     return NULL_TREE;
-  return force_fit_type (type, poly_res, overflowable,
+  tree retval = force_fit_type (type, poly_res, overflowable,
 			 (((sign == SIGNED || overflowable == -1)
 			   && overflow)
 			  | TREE_OVERFLOW (arg1) | TREE_OVERFLOW (arg2)));
+  if (TREE_CODE (type) == INTEGER_TYPE)
+  {
+      if (TYPE_SIZEOF_TYPE (arg1) && TYPE_SIZEOF_TYPE (arg2) && (TYPE_SIZEOF_TYPE (arg1) != TYPE_SIZEOF_TYPE (arg2)))
+      {
+	retval = copy_node (retval);
+        TYPE_SIZEOF_TYPE (retval) = error_mark_node;
+      } else if (TYPE_SIZEOF_TYPE (arg1) && TYPE_SIZEOF_TYPE (arg2) && (TYPE_SIZEOF_TYPE (arg1) == TYPE_SIZEOF_TYPE (arg2))) {
+	retval = copy_node (retval);
+        TYPE_SIZEOF_TYPE (retval) = TYPE_SIZEOF_TYPE (arg1);
+      } else if (TYPE_SIZEOF_TYPE (arg1))
+      {
+	retval = copy_node (retval);
+        TYPE_SIZEOF_TYPE (retval) = TYPE_SIZEOF_TYPE (arg1);
+      } else if (TYPE_SIZEOF_TYPE (arg2))
+      {
+	retval = copy_node (retval);
+        TYPE_SIZEOF_TYPE (retval) = TYPE_SIZEOF_TYPE (arg2);
+      }
+  }
+  return retval;
 }
 
 /* Return true if binary operation OP distributes over addition in operand
@@ -2016,9 +2036,15 @@ fold_convert_const_int_from_int (tree type, const_tree arg1)
   /* Given an integer constant, make new constant with new type,
      appropriately sign-extended or truncated.  Use widest_int
      so that any extension is done according ARG1's type.  */
-  return force_fit_type (type, wi::to_widest (arg1),
+  tree retval = force_fit_type (type, wi::to_widest (arg1),
 			 !POINTER_TYPE_P (TREE_TYPE (arg1)),
 			 TREE_OVERFLOW (arg1));
+  if (TREE_CODE (type) == INTEGER_TYPE && TYPE_SIZEOF_TYPE (arg1))
+  {
+    retval = copy_node (retval);
+    TYPE_SIZEOF_TYPE (retval) = TYPE_SIZEOF_TYPE (arg1);
+  }
+  return retval;
 }
 
 /* A subroutine of fold_convert_const handling conversions a REAL_CST

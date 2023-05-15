@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O -fdump-tree-fre1-details -fdisable-tree-ethread" } */
+/* { dg-options "-O -fdump-tree-fre1-details -fdisable-tree-ethread1" } */
 
 int foo (int i)
 {

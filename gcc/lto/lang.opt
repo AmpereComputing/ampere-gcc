@@ -69,6 +69,9 @@ fwpa=
 LTO Driver RejectNegative Joined Var(flag_wpa)
 Whole program analysis (WPA) mode with number of parallel jobs specified.
 
+fwpt
+LTO Driver Var(flag_wpt)
+Perform whole program transformations after regular IPA analysis stage, which requires availability of function bodies.
 
 list
 LTODump Var(flag_lto_dump_list)

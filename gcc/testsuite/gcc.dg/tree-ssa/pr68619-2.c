@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-dom2-details -w" } */
+/* { dg-options "-O2 -fno-tree-fre -fdump-tree-dom2-details -w" } */
 
 typedef union tree_node *tree;
 struct gcc_options

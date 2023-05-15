@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-vrp1 -fdisable-tree-evrp -fdump-tree-mergephi2" } */
+/* { dg-options "-O2 -fdump-tree-vrp1 -fdisable-tree-evrp -fdump-tree-mergephi3" } */
 
 int bar (void);
 
@@ -21,7 +21,7 @@ int foo2 (int x, int y)
 
 /* We expect to optimiz min/max in VRP*/
 
-/* { dg-final { scan-tree-dump-times "MIN_EXPR" 1 "mergephi2" } } */
-/* { dg-final { scan-tree-dump-times "MAX_EXPR" 1 "mergephi2" } } */
+/* { dg-final { scan-tree-dump-times "MIN_EXPR" 1 "mergephi3" } } */
+/* { dg-final { scan-tree-dump-times "MAX_EXPR" 1 "mergephi3" } } */
 /* { dg-final { scan-tree-dump-not "MIN_EXPR" "vrp1" } } */
 /* { dg-final { scan-tree-dump-not "MAX_EXPR" "vrp1" } } */

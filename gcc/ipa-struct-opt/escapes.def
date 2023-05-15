@@ -1,0 +1,65 @@
+/* Copyright (C) 2016 Free Software Foundation, Inc.
+
+This file is part of GCC.
+
+GCC is free software; you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free
+Software Foundation; either version 3, or (at your option) any later
+version.
+
+GCC is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+for more details.
+
+You should have received a copy of the GNU General Public License
+along with GCC; see the file COPYING3.  If not see
+<http://www.gnu.org/licenses/>.  */
+
+/* Before including this file, you should define a macro:
+   DEF_ESCAPE (ENUM, TEXT)
+   
+   This macro will be called once for each escape reason. The
+   ENUM will be of type "escape_type".  The TEXT is describing
+   the reason for the escape.
+*/
+DEF_ESCAPE (escape_marked_as_used, "Type used in variable marked as used")
+DEF_ESCAPE (escape_via_global_var, "Type used via a external visible variable")
+DEF_ESCAPE (escape_via_global_init, "Type used via a global init of a variable")
+DEF_ESCAPE (escape_non_supported_allocator, "Type used by allocation which is not currently supported")
+DEF_ESCAPE (escape_dependent_type_escapes, "Type uses a type which escapes or is used by a type which escapes")
+DEF_ESCAPE (escape_var_arg_function, "Types escapes via a variable argument function")
+DEF_ESCAPE (escape_bitfields, "Types has bitfields")
+DEF_ESCAPE (escape_recusive_type, "Type has a recusive relationship")
+DEF_ESCAPE (escape_variable_sized_array, "Type has a variable sized type")
+DEF_ESCAPE (escape_external_function, "Type escapes via an external function call")
+DEF_ESCAPE (escape_visible_function, "Type escapes via expternally visible function call")
+DEF_ESCAPE (escape_pointer_function, "Type escapes via an function pointer call")
+DEF_ESCAPE (escape_unkown_field, "Type escapes via an unkown field accessed")
+DEF_ESCAPE (escape_union, "Type escapes via an union")
+DEF_ESCAPE (escape_inline_asm, "Type escapes via inline-asm")
+DEF_ESCAPE (escape_non_multiply_size, "Type escapes a pointer plus which is not a multiplicate of the size")
+DEF_ESCAPE (escape_cast_void, "Type escapes a cast to/from void*")
+DEF_ESCAPE (escape_cast_another_ptr, "Type escapes a cast to a different pointer")
+DEF_ESCAPE (escape_cast_int, "Type escapes a cast from/to intergral type")
+DEF_ESCAPE (escape_int_const, "Type escapes via integer constant")
+DEF_ESCAPE (escape_vce, "Type escapes via a VIEW_CONVERT_EXPR")
+DEF_ESCAPE (escape_array_access, "Type escapes via an array access")
+DEF_ESCAPE (escape_noclonable_function, "Type escapes via a non-clonable function")
+DEF_ESCAPE (escape_rescusive_type, "Recusive type")
+DEF_ESCAPE (escape_user_alignment, "Type has an user alignment set")
+DEF_ESCAPE (escape_volatile, "Type has an variable which is volatile")
+DEF_ESCAPE (escape_non_eq, "Type has a comparison other than equals or not equals")
+DEF_ESCAPE (escape_addr, "Type escapes via taking the address of field")
+DEF_ESCAPE (escape_cannot_change_signature, "Type used in a call that cannot change signature")
+DEF_ESCAPE (escape_non_optimize, "Type used by a function which turns off struct reorg")
+DEF_ESCAPE (escape_array, "Type is used in an array [not handled yet]")
+DEF_ESCAPE (escape_ptr_ptr, "Type is used in a pointer to a pointer [not handled yet]")
+DEF_ESCAPE (escape_return, "Type escapes via a return [not handled yet]")
+DEF_ESCAPE (escape_separate_instance, "Type escapes via a separate instance")
+DEF_ESCAPE (escape_unhandled_rewrite, "Type escapes via a unhandled rewrite stmt")
+DEF_ESCAPE (escape_via_orig_escape, "Type escapes via a original escape type")
+DEF_ESCAPE (escape_instance_field, "Type escapes via a field of instance")
+DEF_ESCAPE (escape_via_empty_no_orig, "Type escapes via empty and no original")
+
+#undef DEF_ESCAPE

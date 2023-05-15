@@ -2287,6 +2287,30 @@ extern tree vector_element_bits_tree (const_tree);
 #define TYPE_CXX_ODR_P(NODE) \
 	(RECORD_OR_UNION_CHECK (NODE)->type_common.string_flag)
 
+/* Nonzero if offsetof is used to a RECORD_TYPE or UNION_TYPE.  Also, taking the
+   address of a member is also treated as offsetof.  This is used to guide
+   field optimizations.  */
+#define TYPE_OFFSETOF_P(NODE) \
+  (RECORD_OR_UNION_CHECK (NODE)->type_common.offsetof_flag)
+
+/* Nonzero if the type is analysed to be non-escaping.
+   This is used to allow struct reorg transformation.  */
+#define TYPE_NON_ESCAPING_P(NODE) \
+  (RECORD_OR_UNION_CHECK (NODE)->type_common.non_escaping_p)
+
+/* Non-null if type was transformed. */
+#define TYPE_ORIGINAL(NODE) \
+  (RECORD_OR_UNION_CHECK (NODE)->type_common.original_type)
+
+/* Nonzero if sizeof was used on a RECORD_OR_UNION_TYPE.  This is used
+   for struct reorg optimizations.  */
+#define TYPE_SIZEOF_P(NODE) \
+  (RECORD_OR_UNION_CHECK (NODE)->type_common.sizeof_flag)
+
+/* Type which generated this integer constant via sizeof. */
+#define TYPE_SIZEOF_TYPE(NODE) \
+  ((NODE)->typed.sizeof_type)
+
 /* Nonzero in a VECTOR_TYPE if the frontends should not emit warnings
    about missing conversions to other vector types of the same size.  */
 #define TYPE_VECTOR_OPAQUE(NODE) \
@@ -2336,6 +2360,11 @@ extern tree vector_element_bits_tree (const_tree);
 /* Nonzero if RECORD_TYPE represents a final derivation of class.  */
 #define TYPE_FINAL_P(NODE) \
   (RECORD_OR_UNION_CHECK (NODE)->base.default_def_flag)
+
+/* If nonzero, it indicates that a C++ type (mainly polymorphic class) may
+   be referenced outside the program being compiled. This is used in C++
+   devirtualization.  */
+#define TYPE_CXX_LOCAL(NODE) (TYPE_CHECK (NODE)->base.nothrow_flag)
 
 /* The debug output functions use the symtab union field to store
    information specific to the debugging format.  The different debug

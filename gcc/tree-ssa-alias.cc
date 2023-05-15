@@ -97,7 +97,8 @@ along with GCC; see the file COPYING3.  If not see
    information are in tree-ssa-structalias.cc.  */
 
 static int nonoverlapping_refs_since_match_p (tree, tree, tree, tree, bool);
-static bool nonoverlapping_component_refs_p (const_tree, const_tree);
+static bool
+nonoverlapping_component_refs_p (const_tree, const_tree, bool = true);
 
 /* Query statistics for the different low-level disambiguators.
    A high-level query may trigger multiple of them.  */
@@ -1874,15 +1875,17 @@ ncr_compar (const void *field1_, const void *field2_)
    overlap for any pair of objects.  This relies on TBAA.  */
 
 static bool
-nonoverlapping_component_refs_p (const_tree x, const_tree y)
+nonoverlapping_component_refs_p (const_tree x, const_tree y,
+				 bool check_strict_aliasing)
 {
   /* Early return if we have nothing to do.
 
      Do not consider this as may-alias for stats - it is more useful
      to have information how many disambiguations happened provided that
      the query was meaningful.  */
-  if (!flag_strict_aliasing
-      || !x || !y
+  if (check_strict_aliasing && !flag_strict_aliasing)
+    return false;
+  if (!x || !y
       || !handled_component_p (x)
       || !handled_component_p (y))
     return false;
@@ -2209,6 +2212,51 @@ indirect_ref_may_alias_decl_p (tree ref1 ATTRIBUTE_UNUSED, tree base1,
   return true;
 }
 
+static bool
+type_not_escaped (tree type)
+{
+  if (type == NULL)
+    return false;
+  while (POINTER_TYPE_P (type) || TREE_CODE (type) == ARRAY_TYPE)
+    type = TREE_TYPE (type);
+  if (!RECORD_OR_UNION_TYPE_P (type))
+    return false;
+  return TYPE_NON_ESCAPING_P (type)
+	 || TYPE_NON_ESCAPING_P (TYPE_MAIN_VARIANT (type));
+}
+
+/* Return the tree node for alias-analysis using type-escape info. That is,
+   get_alias_set result of the node can be used for alias_sets_conflict_p. If
+   the result is not NULL_TREE, TYPE will be set, so the caller can check if the
+   reference is non-escaping type, or field of a non-escaping type.   */
+
+static tree
+ao_ref_for_tbaa_by_non_escape_type (ao_ref *ref, tree *type)
+{
+  tree ptrtype = ao_ref_base_alias_ptr_type (ref);
+  if (ptrtype)
+    {
+      *type = ptrtype;
+      /* Compare by the reference itself.  */
+      return ref->ref;
+    }
+  else if (ref->base && TREE_CODE (ref->base) == MEM_REF
+	   && integer_zerop (TREE_OPERAND (ref->base, 1)))
+    {
+      tree ptrtype = TREE_TYPE (TREE_OPERAND (ref->base, 1));
+      tree base_type = TREE_TYPE (ref->base);
+      if (!POINTER_TYPE_P (ptrtype)
+	  || same_type_for_tbaa (TREE_TYPE (ptrtype), base_type) != 1)
+	return NULL_TREE;
+
+      /* For full access, compare by the type.  */
+      *type = base_type;
+      return base_type;
+    }
+
+  return NULL_TREE;
+}
+
 /* Return true if two indirect references based on *PTR1
    and *PTR2 constrained to [OFFSET1, OFFSET1 + MAX_SIZE1) and
    [OFFSET2, OFFSET2 + MAX_SIZE2) may alias.  *PTR1 and *PTR2 have
@@ -2283,12 +2331,14 @@ indirect_refs_may_alias_p (tree ref1 ATTRIBUTE_UNUSED, tree base1,
   if (!ptr_derefs_may_alias_p (ptr1, ptr2))
     return false;
 
-  /* Disambiguations that rely on strict aliasing rules follow.  */
-  if (!flag_strict_aliasing || !tbaa_p)
-    return true;
-
   ptrtype1 = TREE_TYPE (TREE_OPERAND (base1, 1));
   ptrtype2 = TREE_TYPE (TREE_OPERAND (base2, 1));
+
+  /* Disambiguations that rely on strict aliasing rules follow.  */
+  if ((!flag_strict_aliasing
+       && !(type_not_escaped (ptrtype1) && type_not_escaped (ptrtype2)))
+      || !tbaa_p)
+    return true;
 
   /* If the alias set for a pointer access is zero all bets are off.  */
   if (base1_alias_set == 0
@@ -2330,9 +2380,12 @@ indirect_refs_may_alias_p (tree ref1 ATTRIBUTE_UNUSED, tree base1,
       int res = nonoverlapping_refs_since_match_p (base1, ref1, base2, ref2,
 						   partial_overlap);
       if (res == -1)
-	return !nonoverlapping_component_refs_p (ref1, ref2);
+	return !nonoverlapping_component_refs_p (ref1, ref2, false);
       return !res;
     }
+
+  if (!flag_strict_aliasing)
+    return true;
 
   /* Do access-path based disambiguation.  */
   if (ref1 && ref2
@@ -2485,6 +2538,21 @@ refs_may_alias_p_2 (ao_ref *ref1, ao_ref *ref2, bool tbaa_p)
       && !alias_sets_conflict_p (ao_ref_alias_set (ref1),
 				 ao_ref_alias_set (ref2)))
     return false;
+
+  if (tbaa_p && !flag_strict_aliasing)
+    {
+      /* If a record type is non-escaping, then the access won't overlap with
+	 other types.  */
+      tree t1, t2;
+      tree node1 = ao_ref_for_tbaa_by_non_escape_type (ref1, &t1);
+      tree node2 = ao_ref_for_tbaa_by_non_escape_type (ref2, &t2);
+      if (node1 && node2 && (type_not_escaped (t1) || type_not_escaped (t2)))
+	{
+	  if (!alias_sets_conflict_p (get_alias_set (node1),
+				      get_alias_set (node2), false))
+	    return false;
+	}
+    }
 
   /* If the reference is based on a pointer that points to memory
      that may not be written to then the other reference cannot possibly

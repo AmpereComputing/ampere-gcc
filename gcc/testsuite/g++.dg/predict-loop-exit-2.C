@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-profile_estimate -fdisable-tree-ethread" } */
+/* { dg-options "-O2 -fdump-tree-profile_estimate -fdisable-tree-ethread1" } */
 
 int g;
 int foo();

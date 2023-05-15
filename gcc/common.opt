@@ -1023,6 +1023,11 @@ Align the start of functions.
 falign-functions=
 Common RejectNegative Joined Var(str_align_functions) Optimization
 
+fskip-fma-heuristic=
+Common Var(flag_skip_fma_heuristic) Optimization Init(-1)
+When avoid generating FMA chains that could be slow, heuristically skip
+specified number of FMA candidates and generates the rest.
+
 flimit-function-alignment
 Common Var(flag_limit_function_alignment) Optimization Init(0)
 
@@ -1303,9 +1308,17 @@ fdevirtualize-speculatively
 Common Var(flag_devirtualize_speculatively) Optimization
 Perform speculative devirtualization.
 
+fdevirtualize-fully
+Common Var(flag_devirtualize_fully) Optimization
+Perform full devirtualization on virtual call when all targets are known under whole program assumption.
+
 fdevirtualize
 Common Var(flag_devirtualize) Optimization
 Try to convert virtual calls to direct ones.
+
+fsafe-vcall
+Common Var(flag_safe_vcall) Init(0) Optimization
+Assume all virtual calls are type-safe, otherwise try to fixup those likely unsafe calls.
 
 fdiagnostics-show-location=
 Common Joined RejectNegative Enum(diagnostic_prefixing_rule)
@@ -1905,6 +1918,14 @@ fipa-bit-cp
 Common Var(flag_ipa_bit_cp) Optimization
 Perform interprocedural bitwise constant propagation.
 
+fipa-guarded-deref
+Common Var(flag_ipa_guarded_deref) Optimization
+Perform guarded function pointer derferencing.
+
+fipa-guarded-specialization
+Common Var(flag_ipa_guarded_specialization) Optimization
+Add speculative edges for existing specialized functions.
+
 fipa-modref
 Common Var(flag_ipa_modref) Optimization
 Perform interprocedural modref analysis.
@@ -1950,8 +1971,36 @@ Common Ignore
 Does nothing. Preserved for backward compatibility.
 
 fipa-struct-reorg
-Common Ignore
-Does nothing. Preserved for backward compatibility.
+Common Var(flag_ipa_struct_reorg) Init(0) Optimization
+Perform structure layout optimizations (complete struct relayout).
+
+fipa-reorg-addr-to-index
+Common Var(flag_ipa_reorg_addr_to_index) Init(1) Optimization
+Use a pointer of address as an integer type of array index.
+
+fipa-struct-dco
+Common Var(flag_ipa_struct_dco) Init(0) Optimization
+Perform structure data caching optimizations.
+
+fipa-dco-aggressive-static
+Common Var(flag_ipa_dco_aggressive_static, 31) Init(29) Optimization
+Aggressive static data caching optimization.
+
+fipa-dco-aggressive-dynamic
+Common Var(flag_ipa_dco_aggressive_dynamic, 31) Init(31) Optimization
+Aggressive dynamic data caching optimization.
+
+fipa-dco-aggressive-static=
+Common Joined RejectNegative UInteger Var(flag_ipa_dco_aggressive_static) Optimization IntegerRange(0, 31)
+-fipa-dco-aggressive_static=<number>	Aggressive static data caching bitmask.
+
+fipa-dco-aggressive-dynamic=
+Common Joined RejectNegative UInteger Var(flag_ipa_dco_aggressive_dynamic) Optimization IntegerRange(0, 31)
+-fipa-dco-aggressive_dynamic=<number>	Aggressive dynamic data caching bitmask.
+
+fipa-dco-clone-data
+Common Var(flag_ipa_dco_clone_data) Init(0) Optimization
+Aggressive data caching optimization by cloning data.
 
 fipa-vrp
 Common Var(flag_ipa_vrp) Optimization
@@ -2110,6 +2159,14 @@ Report on permanent memory allocation.
 fmem-report-wpa
 Common Var(mem_report_wpa)
 Report on permanent memory allocation in WPA only.
+
+fmem-layout-trans
+Common Var(flag_mem_layout_trans, 2) Init(0) Optimization
+Enable advanced memory layout transformation optimization.
+
+fmem-layout-trans=
+Common Joined RejectNegative UInteger Var(flag_mem_layout_trans) Optimization IntegerRange(0, 2)
+-fmem-layout-trans=<number>	The memory layout transformation optimization level.
 
 ; This will attempt to merge constant section constants, if 1 only
 ; string constants and constants from constant pool, if 2 also constant
@@ -2860,6 +2917,10 @@ ftree-switch-conversion
 Common Var(flag_tree_switch_conversion) Optimization
 Perform conversions of switch initializations.
 
+ftree-cond-sinking
+Common Var(flag_tree_cond_sinking) Optimization Init(0)
+Enable condition sinking optimization on trees.
+
 ftree-dce
 Common Var(flag_tree_dce) Optimization
 Enable SSA dead code elimination optimization on trees.
@@ -2905,6 +2966,10 @@ ftree-loop-distribution
 Common Var(flag_tree_loop_distribution) Optimization
 Enable loop distribution on trees.
 
+ftree-gen-builtin
+Common Var(flag_tree_gen_builtin) Init(1) Optimization
+Generate builtin code for specific patterns.
+
 ftree-loop-distribute-patterns
 Common Var(flag_tree_loop_distribute_patterns) Optimization
 Enable loop distribution for patterns transformed into a library call.
@@ -2912,6 +2977,10 @@ Enable loop distribution for patterns transformed into a library call.
 ftree-loop-im
 Common Var(flag_tree_loop_im) Init(1) Optimization
 Enable loop invariant motion on trees.
+
+ftree-mem-gathering
+Common Var(flag_tree_mem_gathering) Optimization
+Enable memory gathering optimization in loops.
 
 ftree-loop-linear
 Common Alias(floop-nest-optimize)
@@ -2964,6 +3033,10 @@ Perform straight-line strength reduction.
 ftree-sra
 Common Var(flag_tree_sra) Optimization
 Perform scalar replacement of aggregates.
+
+ftree-lro
+Common Var(flag_tree_lro) Optimization
+Perform loop reduction for specific pattern.
 
 ftree-ter
 Common Var(flag_tree_ter) Optimization
@@ -3606,5 +3679,70 @@ Driver Joined Separate
 fipa-ra
 Common Var(flag_ipa_ra) Optimization
 Use caller save register across calls if possible.
+
+fipa-retyper
+Common Var(flag_ipa_retyper) Optimization
+Retyping rules.
+
+fipa-type-escape-analysis
+Common Var(flag_ipa_type_escape_analysis) Optimization
+Perform type escape analysis.
+
+fipa-sizeof
+Common Var(flag_ipa_sizeof) Optimization
+Disable the type escape analysis for operands of sizeof.
+
+fipa-dead-field-elimination
+Common Var(flag_ipa_dead_field_elimination) Optimization
+Dead field elimination.
+
+fipa-calloc-type-specialization
+Common Var(flag_ipa_calloc_type_specialization) Optimization
+Change return type for calloc if possible.
+
+fipa-alignment-analysis-and-transformation
+Common Var(flag_ipa_alignment_analysis_and_transformation) Optimization
+Propagate alignment across recursive leaf calls.
+
+fipa-eliminate-cast
+Common Var(flag_ipa_eliminate_cast) Optimization
+Remove cast if possible.
+
+fipa-void-ptr-param-specialization
+Common Var(flag_ipa_void_ptr_param_specialization) Optimization
+Change void pointer parameter types according to arguments.
+
+Wdfa
+Common Var(warn_dfa) Init(1) Warning
+Warn about dead fields at link time.
+
+fipa-field-reorder
+Common Var(flag_ipa_field_reorder) Optimization
+Reorder fields.
+
+ffmo-no-trans
+Common Var(flag_fmo_no_trans) Optimization
+merge fields.
+
+fipa-field-merge
+Common Var(flag_ipa_field_merge) Optimization
+merge fields.
+
+fipa-cond-sinking
+Common Var(flag_ipa_cond_sinking) Optimization
+Condition sinking.
+
+fipa-localize-var
+Common Var(flag_ipa_localize_var) Init(1) Optimization
+Transform global malloced or static scalar variable to be specific
+function local.
+
+fipa-array-dse
+Common Var(flag_ipa_array_dse) Init(1) Optimization
+Array dead and redundant store elimination.
+
+fipa-dlo-tests
+Common Var(flag_ipa_dlo_tests)
+A flag to make it easier to test.
 
 ; This comment is to ensure we retain the blank line above.

@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-ccp2" } */
+/* { dg-options "-O2 -fdump-tree-ccp3" } */
 
 void bar (int *);
 void foo (char *, int);
@@ -15,4 +15,4 @@ foo3 ()
     foo ("%d ", results[i]);
 }
 
-/* { dg-final { scan-tree-dump-times "alloca" 0 "ccp2"} } */
+/* { dg-final { scan-tree-dump-times "alloca" 0 "ccp3"} } */

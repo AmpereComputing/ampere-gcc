@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-phiopt4-details" } */
+/* { dg-options "-O2 -fdump-tree-phiopt5-details" } */
 
 int f(unsigned s)
 {
@@ -10,6 +10,6 @@ int f(unsigned s)
   return i;
 }
 
-/* { dg-final { scan-tree-dump "converted to straightline code" "phiopt4" } } */
+/* { dg-final { scan-tree-dump "converted to straightline code" "phiopt5" } } */
 /* Make sure we fold the detected MAX<s, 0>.  */
-/* { dg-final { scan-tree-dump-not "MAX" "phiopt4" } } */
+/* { dg-final { scan-tree-dump-not "MAX" "phiopt5" } } */

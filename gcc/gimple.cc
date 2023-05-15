@@ -1504,6 +1504,10 @@ gimple_call_flags (const gimple *stmt)
       tree decl = gimple_call_fndecl (stmt);
       if (decl)
 	flags = flags_from_decl_or_type (decl);
+      else if (stmt->subcode & GF_CALL_CONST)
+	flags = ECF_CONST;
+      else if (stmt->subcode & GF_CALL_PURE)
+	flags = ECF_PURE;
       flags |= flags_from_decl_or_type (gimple_call_fntype (stmt));
     }
 

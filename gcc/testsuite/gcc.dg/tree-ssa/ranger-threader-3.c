@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-ethread-details -w --param logical-op-non-short-circuit=1" } */
+/* { dg-options "-O2 -fdump-tree-ethread1-details -w --param logical-op-non-short-circuit=1" } */
 
 // Copied from ssa-dom-thread-14.c
 
@@ -38,4 +38,4 @@ expand_shift_1 (int code, int unsignedp, int rotate,
    we will enter the TRUE arm of the conditional and we can thread
    the test to compute the first first argument of the expand_binop
    call if we look backwards through the boolean logicals.  */
-/* { dg-final { scan-tree-dump-times "Registering.*jump thread" 1 "ethread"} } */
+/* { dg-final { scan-tree-dump-times "Registering.*jump thread" 1 "ethread1"} } */

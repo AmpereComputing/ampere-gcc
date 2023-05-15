@@ -44,5 +44,8 @@ void dump_range_entry (FILE *file, struct range_entry *r);
 void debug_range_entry (struct range_entry *r);
 void init_range_entry (struct range_entry *r, tree exp, gimple *stmt);
 bool no_side_effect_bb (basic_block bb);
+unsigned int
+execute_reassoc (bool insert_powi_p, bool bias_loop_carried_phi_ranks_p,
+		 bool is_the_last_reassoc_p);
 
 #endif  /* GCC_SSA_REASSOC_H  */

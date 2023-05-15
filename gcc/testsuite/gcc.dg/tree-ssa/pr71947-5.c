@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fno-tree-vrp -fdump-tree-dom-details" } */
+/* { dg-options "-O2 -fno-tree-vrp -fno-tree-fre -fdump-tree-dom-details" } */
 
 
 static inline long load(long *p)

@@ -4179,6 +4179,42 @@ public:
 
 };
 
+/* Definition of the modref IPA WPT-specific pass.  */
+const pass_data pass_data_ipa_wpt_modref =
+{
+  SIMPLE_IPA_PASS,    /* type */
+  "wpt-modref",       /* name */
+  OPTGROUP_NONE,      /* optinfo_flags */
+  TV_IPA_MODREF,      /* tv_id */
+  0, /* properties_required */
+  0, /* properties_provided */
+  0, /* properties_destroyed */
+  0, /* todo_flags_start */
+  0, /* todo_flags_finish */
+};
+
+class pass_ipa_wpt_modref : public simple_ipa_opt_pass
+{
+public:
+public:
+  pass_ipa_wpt_modref (gcc::context *ctxt)
+    : simple_ipa_opt_pass (pass_data_ipa_wpt_modref, ctxt)
+  {}
+
+  /* opt_pass methods: */
+  bool gate (function *) final override
+  {
+    /* If all functions are in one partition, no need to recompute modref
+       because local modref analysis in ltrans is perform in call-graph
+       toplogical order, and would not cause loss of modref information.  */
+    return flag_ipa_modref
+	   && flag_lto_partition != LTO_PARTITION_NONE
+	   && flag_lto_partition != LTO_PARTITION_ONE;
+  }
+
+  unsigned int execute (function *) final override;
+};
+
 }
 
 unsigned int pass_modref::execute (function *)
@@ -4198,6 +4234,12 @@ ipa_opt_pass_d *
 make_pass_ipa_modref (gcc::context *ctxt)
 {
   return new pass_ipa_modref (ctxt);
+}
+
+simple_ipa_opt_pass *
+make_pass_ipa_wpt_modref (gcc::context *ctxt)
+{
+  return new pass_ipa_wpt_modref (ctxt);
 }
 
 namespace {
@@ -5510,6 +5552,53 @@ pass_ipa_modref::execute (function *)
   return pureconst ? TODO_remove_functions : 0;
 }
 
+unsigned int
+pass_ipa_wpt_modref::execute (function *)
+{
+  /* Release outdated modref summaries.  */
+  ipa_modref_cc_finalize ();
+
+  /* Regenerate function modref information.  */
+  modref_generate ();
+
+  gcc_assert (!optimization_summaries && !summaries);
+
+  if (!summaries_lto)
+    return 0;
+
+  struct cgraph_node **order = XCNEWVEC (struct cgraph_node *,
+					 symtab->cgraph_count);
+  int order_pos;
+  order_pos = ipa_reduced_postorder (order, true, ignore_edge);
+  int i;
+
+  /* Iterate over all strongly connected components in post-order.  */
+  for (i = 0; i < order_pos; i++)
+    {
+      /* Get the component's representative.  That's just any node in the
+	 component from which we can traverse the entire component.  */
+      struct cgraph_node *component_node = order[i];
+
+      if (dump_file)
+	fprintf (dump_file, "\n\nStart of SCC component\n");
+
+      modref_propagate_in_scc (component_node);
+      modref_propagate_flags_in_scc (component_node);
+
+      if (dump_file)
+	modref_propagate_dump_scc (component_node);
+    }
+
+  ((modref_summaries_lto *)summaries_lto)->propagated = true;
+  ipa_free_postorder_info ();
+  free (order);
+  delete fnspec_summaries;
+  fnspec_summaries = NULL;
+  delete escape_summaries;
+  escape_summaries = NULL;
+
+  return 0;
+}
 /* Summaries must stay alive until end of compilation.  */
 
 void

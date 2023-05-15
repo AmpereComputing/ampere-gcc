@@ -1,5 +1,5 @@
 /* { dg-do run } */
-/* { dg-options "-O3 -fdisable-tree-ethread" } */
+/* { dg-options "-O3 -fdisable-tree-ethread1" } */
 
 extern void exit (int);
 

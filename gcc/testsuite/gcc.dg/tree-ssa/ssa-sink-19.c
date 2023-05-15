@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-sink1-details -fdump-tree-cddce2-details" } */
+/* { dg-options "-O2 -fdump-tree-sink1-details -fdump-tree-cddce3-details" } */
 
 static int b=4;
 int c;
@@ -18,4 +18,4 @@ main()
    applying store motion to c and b.  */
 /* { dg-final { scan-tree-dump "Sinking # VUSE" "sink1" } } */
 /* And remove the loop after final value replacement.  */
-/* { dg-final { scan-tree-dump "fix_loop_structure: removing loop" "cddce2" } } */
+/* { dg-final { scan-tree-dump "fix_loop_structure: removing loop" "cddce3" } } */

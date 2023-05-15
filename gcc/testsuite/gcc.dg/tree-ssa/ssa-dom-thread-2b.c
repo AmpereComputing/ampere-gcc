@@ -1,5 +1,5 @@
 /* { dg-do compile } */ 
-/* { dg-options "-O2 -fdump-tree-thread2-stats -fdump-tree-dom2-stats -fdisable-tree-ethread" } */
+/* { dg-options "-O2 -fdump-tree-thread2-stats -fdump-tree-dom2-stats -fdisable-tree-ethread1" } */
 
 void foo();
 void bla();

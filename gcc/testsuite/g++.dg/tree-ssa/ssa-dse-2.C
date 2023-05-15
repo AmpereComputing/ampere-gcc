@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-dse2-details -Wno-return-type" } */
+/* { dg-options "-O2 -fdump-tree-dse3-details -Wno-return-type" } */
 
 typedef __SIZE_TYPE__ size_t;
 extern "C"
@@ -53,5 +53,5 @@ fill_vec_av_set (av_set_t av)
   ((!(vec_av_set.is_empty ())? abort () , 0 : 0));
 }
 
-/* { dg-final { scan-tree-dump-not "Trimming statement .head = -" "dse2" } } */
-/* { dg-final { scan-tree-dump-not "mem\[^\r\n\]*, 0\\);" "dse2" } } */
+/* { dg-final { scan-tree-dump-not "Trimming statement .head = -" "dse3" } } */
+/* { dg-final { scan-tree-dump-not "mem\[^\r\n\]*, 0\\);" "dse3" } } */

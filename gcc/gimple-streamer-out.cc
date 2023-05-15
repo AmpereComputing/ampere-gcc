@@ -168,6 +168,8 @@ output_gimple_stmt (struct output_block *ob, struct function *fn, gimple *stmt)
 				 IFN_LAST, gimple_call_internal_fn (stmt));
 	  else
 	    stream_write_tree (ob, gimple_call_fntype (stmt), true);
+
+	  stream_write_tree_ref (ob, gimple_call_get_type_sizeof_type (stmt));
 	}
       break;
 

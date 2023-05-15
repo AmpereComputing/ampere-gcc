@@ -718,18 +718,24 @@ cgraph_add_edge_to_call_site_hash (cgraph_edge *e)
      one indirect); always hash the direct one.  */
   if (e->speculative && e->indirect_unknown_callee)
     return;
+  /* There are potentially multiple specialization edges for every
+     specialized call; always hash the base egde.  */
+  if (e->guarded_specialization_edge_p ())
+    return;
   cgraph_edge **slot = e->caller->call_site_hash->find_slot_with_hash
       (e->call_stmt, cgraph_edge_hasher::hash (e->call_stmt), INSERT);
   if (*slot)
     {
-      gcc_assert (((cgraph_edge *)*slot)->speculative);
+      gcc_assert (((cgraph_edge *)*slot)->speculative
+		  || ((cgraph_edge *)*slot)->specialized);
       if (e->callee && (!e->prev_callee
 			|| !e->prev_callee->speculative
+			|| !e->prev_callee->specialized
 			|| e->prev_callee->call_stmt != e->call_stmt))
 	*slot = e;
       return;
     }
-  gcc_assert (!*slot || e->speculative);
+  gcc_assert (!*slot || e->speculative || e->specialized);
   *slot = e;
 }
 
@@ -743,8 +749,16 @@ cgraph_node::get_edge (gimple *call_stmt)
   int n = 0;
 
   if (call_site_hash)
-    return call_site_hash->find_with_hash
-	(call_stmt, cgraph_edge_hasher::hash (call_stmt));
+    {
+      e = call_site_hash->find_with_hash
+	  (call_stmt, cgraph_edge_hasher::hash (call_stmt));
+
+      /* Always return the base edge of a group of specialized edges.  */
+      if (e && e->guarded_specialization_edge_p ())
+	e = e->specialized_call_base_edge ();
+
+      return e;
+    }
 
   /* This loop may turn out to be performance problem.  In such case adding
      hashtables into call nodes with very many edges is probably best
@@ -775,6 +789,10 @@ cgraph_node::get_edge (gimple *call_stmt)
 	cgraph_add_edge_to_call_site_hash (e2);
     }
 
+  /* Always return the base edge of a group of specialized edges.  */
+  if (e && e->guarded_specialization_edge_p ())
+    e = e->specialized_call_base_edge ();
+
   return e;
 }
 
@@ -798,6 +816,40 @@ cgraph_edge::set_call_stmt (cgraph_edge *e, gcall *new_stmt,
 	 into a direct one.  */
       new_direct_callee = cgraph_node::get (decl);
       gcc_checking_assert (new_direct_callee);
+    }
+
+  /* Update specialized first and do not return yet in case we're dealing
+     with an edge that is both specialized and speculative.  */
+  if (update_speculative && e->specialized)
+    {
+      /* If this is a guarded specialization edge then delegate the needed
+	 work to the base specialization edge.  This is needed to correctly
+	 update all call statements, including the case where this is a
+	 group of both speculative and specialized edges.  */
+      if (e->guarded_specialization_edge_p ())
+	{
+	  set_call_stmt (e->specialized_call_base_edge (), new_stmt, true);
+	  return e;
+	}
+      else
+	{
+	  cgraph_edge *next;
+	  for (cgraph_edge *d = e->first_specialized_call_target ();
+	       d; d = next)
+	    {
+	      next = d->next_specialized_call_target ();
+	      cgraph_edge *d2 = set_call_stmt (d, new_stmt, false);
+	      gcc_assert (d2 == d);
+	    }
+
+	  /* Don't update base for speculative edges.
+	     The code below that handles speculative edges will.  */
+	  if (!(e->speculative && !new_direct_callee))
+	    {
+	      set_call_stmt (e, new_stmt, false);
+	      return e;
+	    }
+	}
     }
 
   /* Speculative edges has three component, update all of them
@@ -841,6 +893,7 @@ cgraph_edge::set_call_stmt (cgraph_edge *e, gcall *new_stmt,
   /* Only direct speculative edges go to call_site_hash.  */
   if (e->caller->call_site_hash
       && (!e->speculative || !e->indirect_unknown_callee)
+      && (!e->specialized || e->spec_args == NULL)
       /* It is possible that edge was previously speculative.  In this case
 	 we have different value in call stmt hash which needs preserving.  */
       && e->caller->get_edge (e->call_stmt) == e)
@@ -854,11 +907,12 @@ cgraph_edge::set_call_stmt (cgraph_edge *e, gcall *new_stmt,
   /* Update call stite hash.  For speculative calls we only record the first
      direct edge.  */
   if (e->caller->call_site_hash
-      && (!e->speculative
-	  || (e->callee
+      && ((!e->speculative && !e->specialized)
+	  || (e->speculative && e->callee
 	      && (!e->prev_callee || !e->prev_callee->speculative
 		  || e->prev_callee->call_stmt != e->call_stmt))
-	  || (e->speculative && !e->callee)))
+	  || (e->speculative && !e->callee)
+	  || e->base_specialization_edge_p ()))
     cgraph_add_edge_to_call_site_hash (e);
   return e;
 }
@@ -883,7 +937,8 @@ symbol_table::create_edge (cgraph_node *caller, cgraph_node *callee,
 	 construction of call stmt hashtable.  */
       cgraph_edge *e;
       gcc_checking_assert (!(e = caller->get_edge (call_stmt))
-			   || e->speculative);
+			   || e->speculative
+			   || e->specialized);
 
       gcc_assert (is_gimple_call (call_stmt));
     }
@@ -909,6 +964,9 @@ symbol_table::create_edge (cgraph_node *caller, cgraph_node *callee,
   edge->indirect_info = NULL;
   edge->indirect_inlining_edge = 0;
   edge->speculative = false;
+  edge->specialized = false;
+  edge->spec_args = NULL;
+  edge->spec_args_count = 0;
   edge->indirect_unknown_callee = indir_unknown_callee;
   if (call_stmt && caller->call_site_hash)
     cgraph_add_edge_to_call_site_hash (edge);
@@ -1066,6 +1124,10 @@ symbol_table::free_edge (cgraph_edge *e)
 void
 cgraph_edge::remove (cgraph_edge *edge)
 {
+  /* If this is a base specialized edge then we need to remove the guarded
+     specializations too.  */
+  cgraph_edge::remove_specializations (edge);
+
   /* Call all edge removal hooks.  */
   symtab->call_edge_removal_hooks (edge);
 
@@ -1109,6 +1171,8 @@ cgraph_edge::make_speculative (cgraph_node *n2, profile_count direct_count,
   ipa_ref *ref = NULL;
   cgraph_edge *e2;
 
+  gcc_checking_assert (!specialized);
+
   if (dump_file)
     fprintf (dump_file, "Indirect call -> speculative call %s => %s\n",
 	     n->dump_name (), n2->dump_name ());
@@ -1131,6 +1195,63 @@ cgraph_edge::make_speculative (cgraph_node *n2, profile_count direct_count,
   ref->speculative_id = speculative_id;
   ref->speculative = speculative;
   n2->mark_address_taken ();
+  return e2;
+}
+
+/* Mark this edge as specialized and add a new edge representing that N2
+   is a specialized version of the CALLE of this edge, with the specialized
+   arguments found in SPEC_ARGS.  */
+cgraph_edge *
+cgraph_edge::make_specialized (cgraph_node *n2,
+				vec<cgraph_specialization_info>* spec_args,
+				profile_count spec_count)
+{
+  if (speculative)
+    {
+      /* Because both speculative and specialized edges use CALL_STMT and
+	 LTO_STMT_UID to link edges together there is a limitation in
+	 specializing speculative edges.  Only one group of specialized
+	 edges can exist for a given group of speculative edges.  */
+      for (cgraph_edge *direct = first_speculative_call_target ();
+	   direct; direct = direct->next_speculative_call_target ())
+	if (direct != this && direct->specialized)
+	  return NULL;
+    }
+
+  cgraph_node *n = caller;
+  cgraph_edge *e2;
+
+  if (dump_file)
+    fprintf (dump_file, "Creating guarded specialized edge %s -> %s "
+			"from%s callee %s\n",
+			caller->dump_name (), n2->dump_name (),
+			(speculative? " speculative" : ""),
+			callee->dump_name ());
+  specialized = true;
+  e2 = n->create_edge (n2, call_stmt, spec_count);
+
+  /* We don't want to inline the specialized edges seperately.  If the base
+     specialized edge is inlined then we will drop the specializations.  */
+  e2->inline_failed = CIF_UNSPECIFIED;
+  if (TREE_NOTHROW (n2->decl))
+    e2->can_throw_external = false;
+  else
+    e2->can_throw_external = can_throw_external;
+
+  e2->specialized = true;
+
+  unsigned i;
+  unsigned len = spec_args->length ();
+  e2->spec_args = ggc_vec_alloc<cgraph_specialization_info> (len);
+  e2->spec_args_count = len;
+
+  for (i = 0; i < len; i++)
+    e2->spec_args[i] = (*spec_args)[i];
+
+  e2->lto_stmt_uid = lto_stmt_uid;
+  e2->in_polymorphic_cdtor = in_polymorphic_cdtor;
+  count -= e2->count;
+  symtab->call_edge_duplication_hooks (this, e2);
   return e2;
 }
 
@@ -1364,6 +1485,41 @@ cgraph_edge::make_direct (cgraph_edge *edge, cgraph_node *callee)
   return edge;
 }
 
+/* Given the base edge of a group of specialized edges remove all its
+   specialized edges.  Essentially this can be used to undo the descision
+   to specialize EDGE.  */
+
+void
+cgraph_edge::remove_specializations (cgraph_edge *edge)
+{
+  if (edge->base_specialization_edge_p ())
+    {
+      /* If the representative of this group of specialized edges is not
+	 the base edge then set it to be. Otherwise the call site hash
+	 will be invalid once the specializations are removed.  */
+      if (edge->caller->call_site_hash
+	  && edge->caller->get_edge (edge->call_stmt) == edge)
+	cgraph_update_edge_in_call_site_hash (edge);
+
+      cgraph_edge *next;
+      for (cgraph_edge *e2 = edge->caller->callees; e2; e2 = next)
+	{
+	  next = e2->next_callee;
+
+	  if (e2->guarded_specialization_edge_p ()
+	      && edge->call_stmt == e2->call_stmt
+	      && edge->lto_stmt_uid == e2->lto_stmt_uid)
+	    {
+	      edge->count += e2->count;
+	      if (e2->inline_failed)
+		remove (e2);
+	      else
+		e2->callee->remove_symbol_and_inline_clones ();
+	    }
+	}
+    }
+}
+
 /* Redirect callee of the edge to N.  The function does not update underlying
    call expression.  */
 
@@ -1409,9 +1565,38 @@ cgraph_edge::redirect_callee (cgraph_node *n)
 gimple *
 cgraph_edge::redirect_call_stmt_to_callee (cgraph_edge *e)
 {
+  cgraph_edge *specs = NULL;
+  gcall *old_call_stmt = e->call_stmt;
+  /* If we're materializing a speculative and base specialized edge
+     then we want to keep the specializations alive.  This amounts
+     to changing the call statements of the guarded
+     specializations.  */
+  if (e->speculative && e->base_specialization_edge_p ())
+    specs = e->first_specialized_call_target ();
+
+  gcall *new_call_stmt = redirect_call_stmt_to_callee_1 (e);
+
+  if (new_call_stmt != old_call_stmt)
+    {
+      cgraph_edge *next;
+      for (; specs; specs = next)
+	{
+	  next = specs->next_specialized_call_target ();
+	  cgraph_edge *d = set_call_stmt (specs, new_call_stmt, false);
+	  gcc_assert (d == specs);
+	}
+    }
+
+  return new_call_stmt;
+}
+
+gcall *
+cgraph_edge::redirect_call_stmt_to_callee_1 (cgraph_edge *e)
+{
   tree decl = gimple_call_fndecl (e->call_stmt);
   gcall *new_stmt;
   gimple_stmt_iterator gsi;
+  bool remove_specializations_if_base = true;
 
   if (e->speculative)
     {
@@ -1468,6 +1653,8 @@ cgraph_edge::redirect_call_stmt_to_callee (cgraph_edge *e)
 	  /* Indirect edges are not both in the call site hash.
 	     get it updated.  */
 	  update_call_stmt_hash_for_removing_direct_edge (e, indirect);
+
+	  remove_specializations_if_base = false;
 	  cgraph_edge::set_call_stmt (e, new_stmt, false);
 	  e->count = gimple_bb (e->call_stmt)->count;
 
@@ -1483,6 +1670,66 @@ cgraph_edge::redirect_call_stmt_to_callee (cgraph_edge *e)
 	}
     }
 
+  if (e->specialized)
+    {
+      if (e->spec_args != NULL)
+	{
+	  /* Be sure we redirect all specialized targets before poking
+	     about base edge.  */
+	  cgraph_edge *base = e->specialized_call_base_edge ();
+	  gcall *new_stmt;
+
+	  /* Materialization of a guarded specialiazation that has a
+	     speculative base is unsound because the guard will be outside
+	     the speculation guard.  */
+	  gcc_assert (!base->speculative);
+
+	  /* Expand specialization into GIMPLE code.  */
+	  if (dump_file)
+	    fprintf (dump_file,
+		     "Expanding specialized call of %s -> %s\n",
+		     e->caller->dump_name (), e->callee->dump_name ());
+
+	  push_cfun (DECL_STRUCT_FUNCTION (e->caller->decl));
+
+	  profile_count all = base->count;
+	  for (cgraph_edge *e2 = e->first_specialized_call_target ();
+	       e2; e2 = e2->next_specialized_call_target ())
+	    all = all + e2->count;
+
+	  profile_probability prob = e->count.probability_in (all);
+	  if (!prob.initialized_p ())
+	    prob = profile_probability::even ();
+
+	  new_stmt = gimple_sc (e, prob);
+	  e->specialized = false;
+	  if (!base->first_specialized_call_target ())
+	    base->specialized = false;
+
+	  /* Each specialized edge has a representative in the call site hash.
+	     If the representative is removed (materialized) then set the base
+	     call as the representative. */
+	  if (e->caller->call_site_hash
+	      && e->caller->get_edge (e->call_stmt) == e)
+	    cgraph_update_edge_in_call_site_hash (base);
+
+	  cgraph_edge::set_call_stmt (e, new_stmt, false);
+	  e->spec_args = NULL;
+	  e->spec_args_count = 0;
+	  e->count = gimple_bb (e->call_stmt)->count;
+	  /* Once we are done with expanding the sequence, update also base
+	     call probability.  Until then the basic block accounts for the
+	     sum of specialized edges and all non-expanded specializations.  */
+	  if (!base->specialized)
+	    base->count = gimple_bb (base->call_stmt)->count;
+
+	  pop_cfun ();
+	}
+      else if (remove_specializations_if_base)
+	/* The specialized edges are in part connected by CALL_STMT so if
+	   we change it for the base edge then remove all specializations.  */
+	cgraph_edge::remove_specializations (e);
+    }
 
   if (e->indirect_unknown_callee
       || decl == e->callee->decl)
@@ -1714,7 +1961,10 @@ cgraph_update_edges_for_call_stmt (gimple *old_stmt, tree old_decl,
 	else
 	  {
 	    while (node != orig && !node->next_sibling_clone)
-	      node = node->clone_of;
+	      {
+		gcc_assert (node);
+		node = node->clone_of;
+	      }
 	    if (node != orig)
 	      node = node->next_sibling_clone;
 	  }
@@ -1771,6 +2021,10 @@ cgraph_node::remove_callers (void)
      assignment.  */
   for (e = callers; e; e = f)
     {
+      /* If this is a base specialized edge then we need to remove the guarded
+	 specializations too.  */
+      cgraph_edge::remove_specializations (e);
+
       f = e->next_caller;
       symtab->call_edge_removal_hooks (e);
       e->remove_caller ();
@@ -1841,20 +2095,30 @@ cgraph_node::release_body (bool keep_arguments)
      needed to emit debug info later.  */
   if (!used_as_abstract_origin && DECL_INITIAL (decl))
     DECL_INITIAL (decl) = error_mark_node;
-  release_function_body (decl);
-  if (lto_file_data)
-    {
-      lto_free_function_in_decl_state_for_node (this);
-      lto_file_data = NULL;
-    }
-  if (flag_checking && clones)
+
+  if (flag_checking)
     {
       /* It is invalid to release body before materializing clones except
 	 for thunks that don't really need a body.  Verify also that we do
 	 not leak pointers to the call statements.  */
       for (cgraph_node *node = clones; node;
 	   node = node->next_sibling_clone)
-	gcc_assert (node->thunk && !node->callees->call_stmt);
+	gcc_assert (node->thunk && node->callees && !node->callees->call_stmt);
+
+      /* Function body is shared by origin and clone node, verify that origin
+	 node would not contain dangling statement pointer in callee edges and
+	 reference list.  */
+      cgraph_node *node = cgraph_node::get (decl);
+      if (node != this && node && gimple_has_body_p (decl))
+	gcc_assert ((!node->callees || thunk) && !node->indirect_calls
+		    && !num_references ());
+    }
+
+  release_function_body (decl);
+  if (lto_file_data)
+    {
+      lto_free_function_in_decl_state_for_node (this);
+      lto_file_data = NULL;
     }
   remove_callees ();
   remove_all_references ();
@@ -2081,6 +2345,10 @@ cgraph_edge::dump_edge_flags (FILE *f)
 {
   if (speculative)
     fprintf (f, "(speculative) ");
+  if (base_specialization_edge_p ())
+    fprintf (f, "(specialized base) ");
+  if (guarded_specialization_edge_p ())
+    fprintf (f, "(guarded specialization) ");
   if (!inline_failed)
     fprintf (f, "(inlined) ");
   if (call_stmt_cannot_inline_p)
@@ -3326,6 +3594,10 @@ verify_speculative_call (struct cgraph_node *node, gimple *stmt,
        direct = direct->next_callee)
     if (direct->call_stmt == stmt && direct->lto_stmt_uid == lto_stmt_uid)
       {
+	/* Guarded specialized edges share the same CALL_STMT and LTO_STMT_UID
+	   but are handled separately.  */
+	if (direct->guarded_specialization_edge_p ())
+	  continue;
 	if (!first_call)
 	  first_call = direct;
 	if (prev_call && direct != prev_call->next_callee)
@@ -3357,7 +3629,7 @@ verify_speculative_call (struct cgraph_node *node, gimple *stmt,
 	direct_calls[direct->speculative_id] = direct;
       }
 
-  if (first_call->call_stmt
+  if (first_call->call_stmt && node->call_site_hash
       && first_call != node->get_edge (first_call->call_stmt))
     {
       error ("call stmt hash does not point to first direct edge of "
@@ -3412,6 +3684,86 @@ verify_speculative_call (struct cgraph_node *node, gimple *stmt,
 	     indirect->num_speculative_call_targets_p ());
       return true;
     }
+  return false;
+}
+
+/* Verify consistency of specialized call in NODE corresponding to STMT
+   and LTO_STMT_UID.  If BASE is set, assume that it is the base
+   edge of call sequence.  Return true if error is found.
+
+   This function is called to every component of specialized call (base edge
+   and specialized edges).  To save duplicated work, do full testing only
+   when testing the base edge.  */
+static bool
+verify_specialized_call (struct cgraph_node *node, gimple *stmt,
+			 unsigned int lto_stmt_uid,
+			 struct cgraph_edge *base,
+			 struct cgraph_edge *edge)
+{
+  if (base == NULL)
+    {
+      cgraph_edge *base, *iter;
+      for (base = node->callees; base;
+	   base = base->next_callee)
+	if (base->call_stmt == stmt
+	    && base->lto_stmt_uid == lto_stmt_uid
+	    && base->spec_args == NULL)
+	  break;
+      if (!base)
+	{
+	  error ("missing base call in specialized call sequence");
+	  return true;
+	}
+      if (!base->specialized)
+	{
+	  error ("base call in specialized call sequence has no "
+		 "specialized flag");
+	  return true;
+	}
+      for (iter = node->callees; iter != base;
+	   iter = iter->next_callee)
+	if (iter == edge)
+	  break;
+      if (iter == base)
+	{
+	  error ("specialized edges must precede the base specialized edge");
+	  return true;
+	}
+      for (base = base->next_callee; base;
+	   base = base->next_callee)
+	if (base->call_stmt == stmt
+	    && base->lto_stmt_uid == lto_stmt_uid
+	    && base->spec_args == NULL)
+	  {
+	    error ("cannot have more than one base edge in specialized "
+		   "call sequence");
+	    return true;
+	  }
+      return false;
+    }
+
+  cgraph_edge *prev_call = NULL;
+
+  for (cgraph_edge *spec = node->callees; spec;
+       spec = spec->next_callee)
+    if (spec->call_stmt == stmt
+	&& spec->lto_stmt_uid == lto_stmt_uid
+	&& spec->spec_args != NULL)
+      {
+	if (prev_call && spec != prev_call->next_callee)
+	  {
+	    error ("specialized edges are not adjacent");
+	    return true;
+	  }
+	prev_call = spec;
+	if (!spec->specialized)
+	  {
+	    error ("call to %s in specialized call sequence has no "
+		   "specialized flag", spec->callee->dump_name ());
+	    return true;
+	  }
+      }
+
   return false;
 }
 
@@ -3591,6 +3943,7 @@ cgraph_node::verify_node (void)
       if (gimple_has_body_p (e->caller->decl)
 	  && !e->caller->inlined_to
 	  && !e->speculative
+	  && !e->specialized
 	  /* Optimized out calls are redirected to __builtin_unreachable.  */
 	  && (e->count.nonzero_p ()
 	      || ! e->callee->decl
@@ -3617,6 +3970,10 @@ cgraph_node::verify_node (void)
 	  && verify_speculative_call (e->caller, e->call_stmt, e->lto_stmt_uid,
 				      NULL))
 	error_found = true;
+      if (e->specialized
+	  && verify_specialized_call (e->caller, e->call_stmt, e->lto_stmt_uid,
+				      (e->spec_args == NULL? e : NULL), e))
+	error_found = true;
     }
   for (e = indirect_calls; e; e = e->next_callee)
     {
@@ -3625,6 +3982,7 @@ cgraph_node::verify_node (void)
       if (gimple_has_body_p (e->caller->decl)
 	  && !e->caller->inlined_to
 	  && !e->speculative
+	  && !e->specialized
 	  && e->count.ipa_p ()
 	  && count
 	      == ENTRY_BLOCK_PTR_FOR_FN (DECL_STRUCT_FUNCTION (decl))->count
@@ -3643,6 +4001,11 @@ cgraph_node::verify_node (void)
 	  && verify_speculative_call (e->caller, e->call_stmt, e->lto_stmt_uid,
 				      e))
 	error_found = true;
+      if (e->specialized || e->spec_args != NULL)
+	{
+	  error ("Cannot have specialized edges in indirect call");
+	  error_found = true;
+	}
     }
   for (i = 0; iterate_reference (i, ref); i++)
     {
@@ -3835,7 +4198,7 @@ cgraph_node::verify_node (void)
 
       for (e = callees; e; e = e->next_callee)
 	{
-	  if (!e->aux && !e->speculative)
+	  if (!e->aux && !e->speculative && !e->specialized)
 	    {
 	      error ("edge %s->%s has no corresponding call_stmt",
 		     identifier_to_locale (e->caller->name ()),
@@ -3847,7 +4210,7 @@ cgraph_node::verify_node (void)
 	}
       for (e = indirect_calls; e; e = e->next_callee)
 	{
-	  if (!e->aux && !e->speculative)
+	  if (!e->aux && !e->speculative && !e->specialized)
 	    {
 	      error ("an indirect edge from %s has no corresponding call_stmt",
 		     identifier_to_locale (e->caller->name ()));

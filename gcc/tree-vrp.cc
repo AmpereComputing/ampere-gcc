@@ -4420,3 +4420,4 @@ make_pass_vrp (gcc::context *ctxt)
 {
   return new pass_vrp (ctxt);
 }
+

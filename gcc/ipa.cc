@@ -197,6 +197,13 @@ walk_polymorphic_call_targets (hash_set<void *> *reachable_call_targets,
 	    continue;
 
 	  n->indirect_call_target = true;
+
+	  /* Here, do not mark targets as reachable for full devirtualization,
+	     which could enable elimination of member functions of class type
+	     that is never instantiated.  */
+	  if (flag_devirtualize_fully)
+	    continue;
+
 	  symtab_node *body = n->function_symbol ();
 
 	  /* Prior inlining, keep alive bodies of possible targets for
@@ -250,6 +257,31 @@ walk_polymorphic_call_targets (hash_set<void *> *reachable_call_targets,
 	    cgraph_edge::redirect_call_stmt_to_callee (edge);
 	}
     }
+}
+
+/* Return false when vtable should be retained for purpose of full
+   devirtualization if there is no direct reference to it.  */
+
+static bool
+can_remove_vtable_if_no_refs_p (varpool_node *vnode)
+{
+  if (!flag_devirtualize_fully)
+    return true;
+
+  if (DECL_EXTERNAL (vnode->decl) && !vnode->in_other_partition)
+    return true;
+
+  /* We will force generating vtables in LGEN stage even they are "unused",
+     since they carry information needed by devirtualization.  */
+  if (!in_lto_p && flag_generate_lto)
+    return false;
+
+  /* All vtables seen at LTRANS stage are result of dead class elimination
+     at WPA, no need to prune them further.  */
+  if (flag_ltrans)
+    return false;
+
+  return true;
 }
 
 /* Perform reachability analysis and reclaim all unreachable nodes.
@@ -350,8 +382,10 @@ symbol_table::remove_unreachable_nodes (FILE *file)
 
   /* Mark variables that are obviously needed.  */
   FOR_EACH_DEFINED_VARIABLE (vnode)
-    if (!vnode->can_remove_if_no_refs_p()
-	&& !vnode->in_other_partition)
+    if ((!vnode->can_remove_if_no_refs_p ()
+	 && !vnode->in_other_partition)
+	|| (DECL_VIRTUAL_P (vnode->decl)
+	    && !can_remove_vtable_if_no_refs_p (vnode)))
       {
 	reachable.add (vnode);
 	enqueue_node (vnode, &first, &reachable);
@@ -613,6 +647,11 @@ symbol_table::remove_unreachable_nodes (FILE *file)
 	      vnode->definition = false;
 	      (*debug_hooks->late_global_decl) (vnode->decl);
 	    }
+	  /* Keep body of vtable since it may be used even the vtable is
+	     optimized away.  */
+	  if (flag_devirtualize_fully && DECL_VIRTUAL_P (vnode->decl)
+	      && !DECL_EXTERNAL (vnode->decl))
+	    vnode->get_constructor ();
 	  vnode->remove ();
 	  changed = true;
 	}

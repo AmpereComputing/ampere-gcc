@@ -74,6 +74,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "ipa-modref-tree.h"
 #include "ipa-modref.h"
 #include "tree-ssa-sccvn.h"
+#include "cfghooks.h"
 
 /* This algorithm is based on the SCC algorithm presented by Keith
    Cooper and L. Taylor Simpson in "SCC-Based Value numbering"
@@ -355,6 +356,8 @@ static vn_reference_t last_inserted_ref;
 static vn_phi_t last_inserted_phi;
 static vn_nary_op_t last_inserted_nary;
 static vn_ssa_aux_t last_pushed_avail;
+static vn_ssa_aux_t last_pushed_nary_ref;
+static nary_ref* nary_ref_freelist;
 
 /* Valid hashtables storing information we have proven to be
    correct.  */
@@ -490,9 +493,9 @@ VN_INFO (tree name)
 	    nary->predicated_values = 0;
 	    nary->u.result = boolean_true_node;
 	    vn_nary_op_insert_into (nary, valid_info->nary);
-	    gcc_assert (nary->unwind_to == NULL);
 	    /* Also do not link it into the undo chain.  */
 	    last_inserted_nary = nary->next;
+	    /* There could be a predicate already.  */
 	    nary->next = (vn_nary_op_t)(void *)-1;
 	    nary = alloc_vn_nary_op_noinit (2, &vn_tables_insert_obstack);
 	    init_vn_nary_op_from_pieces (nary, 2, EQ_EXPR,
@@ -500,7 +503,6 @@ VN_INFO (tree name)
 	    nary->predicated_values = 0;
 	    nary->u.result = boolean_false_node;
 	    vn_nary_op_insert_into (nary, valid_info->nary);
-	    gcc_assert (nary->unwind_to == NULL);
 	    last_inserted_nary = nary->next;
 	    nary->next = (vn_nary_op_t)(void *)-1;
 	    if (dump_file && (dump_flags & TDF_DETAILS))
@@ -3918,6 +3920,121 @@ vn_reference_insert_pieces (tree vuse, alias_set_type set,
   return vr1;
 }
 
+static bool
+dominated_by_p_w_unex (basic_block bb1, basic_block bb2, bool);
+
+static tree
+vn_nary_op_get_predicated_value (vn_nary_op_t vno, basic_block bb)
+{
+  if (! vno->predicated_values)
+    return vno->u.result;
+  for (vn_pval *val = vno->u.values; val; val = val->next)
+    for (unsigned i = 0; i < val->n; ++i)
+      {
+	/* Do not handle backedge executability optimistically since
+	 when figuring out whether to iterate we do not consider
+	 changed predication.  */
+	if (dominated_by_p_w_unex (
+	      bb, BASIC_BLOCK_FOR_FN (cfun, val->valid_dominated_by_p[i]),
+	      false))
+	return val->result;
+      }
+  return NULL_TREE;
+}
+
+/* Whether a predicated value VAL is valid at BB.  */
+
+static inline bool
+is_vn_valid_at_bb (vn_pval *val, basic_block bb)
+{
+  for (unsigned i = 0; i < val->n; ++i)
+    {
+      basic_block val_bb
+	= BASIC_BLOCK_FOR_FN (cfun, val->valid_dominated_by_p[i]);
+      if (dominated_by_p_w_unex (bb, val_bb, false))
+	return true;
+    }
+  return false;
+}
+
+/* Lookup the variable that represents a set of equivalences of NAME at
+   basic-block BB.  This variable is called the "equivalence head" of NAME.  */
+
+static tree
+lookup_equiv_head (tree name, basic_block bb)
+{
+  if (TREE_CODE (name) != SSA_NAME)
+    return name;
+  tree result = VN_INFO (name)->valnum;
+  if (result == VN_TOP)
+    /* VN_TOP is not allowed, otherwise it will be too optimistic for
+       non-iterating mode.  */
+    return name;
+
+  /* Folding expressions from equivalences can generate incorrect values.
+     For excample, operations on 0.0 and -0.0. So for floating-point values,
+     equivalences are not used.  */
+  if (FLOAT_TYPE_P (TREE_TYPE (name)))
+    return result;
+
+  vn_nary_op_t vnresult;
+  /* As we insert new value at front in vn_nary_op_insert_into, we don't need
+     search iteratively for the most general equiv-head.  */
+  vn_nary_op_lookup_pieces (1, NOP_EXPR, TREE_TYPE (result), &result,
+			    &vnresult);
+  if (vnresult && vnresult->predicated_values)
+    {
+      tree eq = vn_nary_op_get_predicated_value (vnresult, bb);
+      if (eq)
+	return eq;
+    }
+  return result;
+}
+
+/* Lookup the "equivalence head"s of OPS at BB, and store them in TO.  N is the
+   size of OPS.  */
+
+static void
+lookup_equiv_heads (unsigned n, tree *ops, tree *to, basic_block bb)
+{
+  for (unsigned i = 0; i < n; i++)
+    {
+      tree equiv_head = lookup_equiv_head (ops[i], bb);
+      if (dump_file && (dump_flags & TDF_DETAILS) && equiv_head != ops[i])
+	{
+	  fprintf (dump_file, "Use equiv-head ");
+	  print_generic_expr (dump_file, equiv_head, TDF_NONE);
+	  fprintf (dump_file, " for ");
+	  print_generic_expr (dump_file, ops[i], TDF_NONE);
+	  fprintf (dump_file, "\n");
+	}
+      to[i] = equiv_head;
+    }
+}
+
+/* Returns whether edge PRED_E is currently being tracked.  */
+
+static inline bool
+vn_tracking_edge (edge pred_e)
+{
+  if (!single_pred_p (pred_e->dest))
+    {
+      /* Never record for backedges.  */
+      if (pred_e->flags & EDGE_DFS_BACK)
+	return false;
+      edge_iterator ei;
+      edge e;
+      int cnt = 0;
+      /* Ignore backedges.  */
+      FOR_EACH_EDGE (e, ei, pred_e->dest->preds)
+	if (!dominated_by_p (CDI_DOMINATORS, e->src, e->dest))
+	  cnt++;
+      if (cnt != 1)
+	return false;
+    }
+  return true;
+}
+
 /* Compute and return the hash value for nary operation VBO1.  */
 
 hashval_t
@@ -4051,6 +4168,9 @@ init_vn_nary_op_from_stmt (vn_nary_op_t vno, gassign *stmt)
       for (i = 0; i < vno->length; ++i)
 	vno->op[i] = gimple_op (stmt, i + 1);
     }
+  /* Insert and lookup N-ary results by the operands' equivalence heads.  */
+  if (gimple_bb (stmt))
+    lookup_equiv_heads (vno->length, vno->op, vno->op, gimple_bb (stmt));
 }
 
 /* Compute the hashcode for VNO and look for it in the hash table;
@@ -4195,13 +4315,13 @@ vn_nary_op_insert_into (vn_nary_op_t vno, vn_nary_op_table_type *table)
 	  basic_block vno_bb
 	    = BASIC_BLOCK_FOR_FN (cfun, vno->u.values->valid_dominated_by_p[0]);
 	  vn_pval *nval = vno->u.values;
+	  /* Avoid inserting duplicated result.  */
+	  vno->u.values = NULL;
 	  vn_pval **next = &vno->u.values;
-	  bool found = false;
 	  for (vn_pval *val = (*slot)->u.values; val; val = val->next)
 	    {
 	      if (expressions_equal_p (val->result, nval->result))
 		{
-		  found = true;
 		  for (unsigned i = 0; i < val->n; ++i)
 		    {
 		      basic_block val_bb
@@ -4215,17 +4335,15 @@ vn_nary_op_insert_into (vn_nary_op_t vno, vn_nary_op_table_type *table)
 			gcc_unreachable ();
 		    }
 		  /* Append value.  */
-		  *next = (vn_pval *) obstack_alloc (&vn_tables_obstack,
-						     sizeof (vn_pval)
-						     + val->n * sizeof (int));
-		  (*next)->next = NULL;
-		  (*next)->result = val->result;
-		  (*next)->n = val->n + 1;
-		  memcpy ((*next)->valid_dominated_by_p,
-			  val->valid_dominated_by_p,
+		  nval = (vn_pval *) obstack_alloc (&vn_tables_obstack,
+						    sizeof (vn_pval)
+						      + val->n * sizeof (int));
+		  nval->next = NULL;
+		  nval->result = val->result;
+		  nval->n = val->n + 1;
+		  memcpy (nval->valid_dominated_by_p, val->valid_dominated_by_p,
 			  val->n * sizeof (int));
-		  (*next)->valid_dominated_by_p[val->n] = vno_bb->index;
-		  next = &(*next)->next;
+		  nval->valid_dominated_by_p[val->n] = vno_bb->index;
 		  if (dump_file && (dump_flags & TDF_DETAILS))
 		    fprintf (dump_file, "Appending predicate to value.\n");
 		  continue;
@@ -4238,8 +4356,10 @@ vn_nary_op_insert_into (vn_nary_op_t vno, vn_nary_op_table_type *table)
 	      (*next)->next = NULL;
 	      next = &(*next)->next;
 	    }
-	  if (!found)
-	    *next = nval;
+	  /* Put new result at front, so lookup_equiv_head can find the last
+	     inserted (most general) result.  */
+	  nval->next = vno->u.values;
+	  vno->u.values = nval;
 
 	  *slot = vno;
 	  vno->next = last_inserted_nary;
@@ -4284,6 +4404,86 @@ vn_nary_op_insert_pieces (unsigned int length, enum tree_code code,
   return vn_nary_op_insert_into (vno1, valid_info->nary);
 }
 
+/* Similar with vn_nary_op_insert_pieces, but insert as predicated values.  */
+
+static vn_nary_op_t
+vn_nary_op_insert_pieces_predicated_1 (unsigned int length, enum tree_code code,
+				       tree type, tree *ops, tree result,
+				       unsigned int value_id, basic_block bb)
+{
+  vn_nary_op_t vno1 = alloc_vn_nary_op (length, NULL_TREE, value_id);
+  init_vn_nary_op_from_pieces (vno1, length, code, type, ops);
+  vno1->predicated_values = 1;
+  vno1->u.values
+    = (vn_pval *) obstack_alloc (&vn_tables_obstack, sizeof (vn_pval));
+  vno1->u.values->next = NULL;
+  vno1->u.values->result = result;
+  vno1->u.values->n = 1;
+  vno1->u.values->valid_dominated_by_p[0] = bb->index;
+  return vn_nary_op_insert_into (vno1, valid_info->nary);
+}
+
+/* Fold N-ary expression of equiv-heads, return NULL_TREE if not folded.  */
+
+static tree
+fold_const_from_equiv_heads (unsigned length, tree_code opcode, tree *op,
+			     tree type)
+{
+  tree result = NULL_TREE;
+  /* We're using equiv-heads, i.e. the most general operands, shortcut for
+     situations that can fold.  */
+  switch (length)
+    {
+    case 1:
+      if (CONSTANT_CLASS_P (op[0]))
+	result
+	  = gimple_simplify (opcode, type, op[0], NULL, no_follow_ssa_edges);
+      break;
+    case 2:
+      if ((CONSTANT_CLASS_P (op[0]) && CONSTANT_CLASS_P (op[1]))
+	  || op[0] == op[1])
+	result = gimple_simplify (opcode, type, op[0], op[1], NULL,
+				  no_follow_ssa_edges);
+      break;
+    case 3:
+      if (CONSTANT_CLASS_P (op[0]) && CONSTANT_CLASS_P (op[1])
+	  && CONSTANT_CLASS_P (op[2]))
+	result = gimple_simplify (opcode, type, op[0], op[1], op[2], NULL,
+				  no_follow_ssa_edges);
+      break;
+    default:
+      break;
+    }
+  if (result && !useless_type_conversion_p (type, TREE_TYPE (result)))
+    result = fold_convert (type, result);
+  return result;
+}
+
+/* Insert a back-reference to vn_nary_op_t in vn_ssa_aux.  */
+
+static inline void
+push_new_nary_ref (vn_nary_op_t slot, vn_ssa_aux_t info)
+{
+  nary_ref *ref;
+  if (nary_ref_freelist)
+    {
+      ref = nary_ref_freelist;
+      nary_ref_freelist = nary_ref_freelist->next;
+    }
+  else
+    ref = XOBNEW (&vn_ssa_aux_obstack, nary_ref);
+  ref->next = info->ref;
+  ref->next_undo = last_pushed_nary_ref;
+  ref->slot = slot;
+  last_pushed_nary_ref = info;
+  info->ref = ref;
+  ++info->num_nary_ref;
+  gcc_assert (info->num_nary_ref > 0);
+}
+
+static vn_nary_op_t
+val_equiv_insert (tree op1, tree op2, edge e);
+
 static vn_nary_op_t
 vn_nary_op_insert_pieces_predicated (unsigned int length, enum tree_code code,
 				     tree type, tree *ops,
@@ -4291,21 +4491,15 @@ vn_nary_op_insert_pieces_predicated (unsigned int length, enum tree_code code,
 				     edge pred_e)
 {
   /* ???  Currently tracking BBs.  */
-  if (! single_pred_p (pred_e->dest))
-    {
-      /* Never record for backedges.  */
-      if (pred_e->flags & EDGE_DFS_BACK)
-	return NULL;
-      edge_iterator ei;
-      edge e;
-      int cnt = 0;
-      /* Ignore backedges.  */
-      FOR_EACH_EDGE (e, ei, pred_e->dest->preds)
-	if (! dominated_by_p (CDI_DOMINATORS, e->src, e->dest))
-	  cnt++;
-      if (cnt != 1)
-	return NULL;
-    }
+  if (!vn_tracking_edge (pred_e))
+    return NULL;
+  /* Equivalence can represent this.  */
+  if (code == EQ_EXPR && result == boolean_true_node)
+    return val_equiv_insert (ops[0], ops[1], pred_e);
+  /* Leave this for inverted condition.  */
+  if (code == NE_EXPR && result == boolean_false_node)
+    return NULL;
+
   if (dump_file && (dump_flags & TDF_DETAILS)
       /* ???  Fix dumping, but currently we only get comparisons.  */
       && TREE_CODE_CLASS (code) == tcc_comparison)
@@ -4318,36 +4512,255 @@ vn_nary_op_insert_pieces_predicated (unsigned int length, enum tree_code code,
       fprintf (dump_file, " == %s\n",
 	       integer_zerop (result) ? "false" : "true");
     }
-  vn_nary_op_t vno1 = alloc_vn_nary_op (length, NULL_TREE, value_id);
-  init_vn_nary_op_from_pieces (vno1, length, code, type, ops);
-  vno1->predicated_values = 1;
-  vno1->u.values = (vn_pval *) obstack_alloc (&vn_tables_obstack,
-					      sizeof (vn_pval));
-  vno1->u.values->next = NULL;
-  vno1->u.values->result = result;
-  vno1->u.values->n = 1;
-  vno1->u.values->valid_dominated_by_p[0] = pred_e->dest->index;
-  return vn_nary_op_insert_into (vno1, valid_info->nary);
+  for (unsigned i = 0; i < length; i++)
+    gcc_checking_assert (lookup_equiv_head (ops[i], pred_e->dest) == ops[i]);
+
+  /* Skip if the result is known. (Caused by re-inserting predicates.)  */
+  tree simplified = fold_const_from_equiv_heads (length, code, ops, type);
+  if (simplified)
+    {
+      if (dump_file && (dump_flags & TDF_DETAILS))
+	{
+	  fprintf (dump_file, "Result is known: ");
+	  print_generic_expr (dump_file, simplified, TDF_NONE);
+	  fprintf (dump_file, ", skipped.\n");
+	}
+      return NULL;
+    }
+
+  vn_nary_op_t val
+    = vn_nary_op_insert_pieces_predicated_1 (length, code, type, ops,
+					     result, value_id, pred_e->dest);
+  /* Insert back-refs (operand->slot) to vn_ssa_aux structure.  */
+  for (unsigned i = 0; i < length; i++)
+    if (TREE_CODE (ops[i]) == SSA_NAME)
+      {
+	vn_ssa_aux_t info = VN_INFO (ops[i]);
+	if (info->valnum == ops[i])
+	  push_new_nary_ref (val, info);
+      }
+  return val;
 }
 
-static bool
-dominated_by_p_w_unex (basic_block bb1, basic_block bb2, bool);
+/* Record the equivalence of OP1 and OP2 on edge E.  */
 
-static tree
-vn_nary_op_get_predicated_value (vn_nary_op_t vno, basic_block bb)
+static vn_nary_op_t
+val_equiv_insert (tree op1, tree op2, edge e)
 {
-  if (! vno->predicated_values)
-    return vno->u.result;
+  /* Record by equivalence heads.  */
+  basic_block bb = e->dest;
+  tree lhs = lookup_equiv_head (op1, bb);
+  tree rhs = lookup_equiv_head (op2, bb);
+  if (lhs == rhs)
+    return NULL;
+  /* Set RHS to be new equiv-head for LHS.  LHS must be SSA_NAME.  */
+  if (TREE_CODE (lhs) != SSA_NAME)
+    {
+      if (TREE_CODE (rhs) == SSA_NAME)
+	std::swap (lhs, rhs);
+      else
+	return NULL;
+    }
+  vn_ssa_aux_t rhs_info = NULL, lhs_info = VN_INFO (lhs);
+
+  /* Choose the hand-side with more recorded n-ary expressions as new
+     equivalence head, to make fewer re-insertions.  */
+  if (TREE_CODE (rhs) == SSA_NAME)
+    {
+      rhs_info = VN_INFO (rhs);
+      if (rhs_info->num_nary_ref < lhs_info->num_nary_ref)
+	{
+	  std::swap (lhs, rhs);
+	  std::swap (rhs_info, lhs_info);
+	}
+    }
+
+  if (dump_file && (dump_flags & TDF_DETAILS))
+    {
+      fprintf (dump_file, "Recording equivalence of ");
+      print_generic_expr (dump_file, lhs);
+      fprintf (dump_file, " and ");
+      print_generic_expr (dump_file, rhs);
+      fprintf (dump_file, " at BB%d\n", bb->index);
+    }
+  /* Record equivalence as unary NOP_EXPR.  */
+  vn_nary_op_t val
+    = vn_nary_op_insert_pieces_predicated_1 (1, NOP_EXPR, TREE_TYPE (lhs),
+					     &lhs, rhs, 0, bb);
+  /* Back-ref for equivalences is result->slot rather than op->slot, so that
+     when new equiv-head is appended, we can update them.  */
+  if (TREE_CODE (rhs) == SSA_NAME)
+    push_new_nary_ref (val, rhs_info);
+
+  /* Iterate on LHS's references, first update equiv-heads, then re-insert
+     former predicates, so that the result will be latest.  */
+  hash_map<vn_nary_op_t, tree> predicates;
+  vn_nary_op_t slot;
+  tree old_head = lhs_info->valnum;
+  nary_ref *ref = lhs_info->ref;
+  for (; ref; ref = ref->next)
+    {
+      slot = ref->slot;
+      if (!slot->predicated_values)
+	continue;
+      /* Update recorded equivalences with new equiv-head.  */
+      if (slot->opcode == NOP_EXPR && slot->length == 1)
+	{
+	  if (slot->op[0] == rhs)
+	    continue;
+	  for (vn_pval *pval = slot->u.values; pval; pval = pval->next)
+	    if (expressions_equal_p (pval->result, old_head)
+		&& is_vn_valid_at_bb (pval, bb))
+	      {
+		if (dump_file && (dump_flags & TDF_DETAILS))
+		  {
+		    fprintf (dump_file, "Updating equiv-head of ");
+		    print_generic_expr (dump_file, slot->op[0], TDF_SLIM);
+		    fprintf (dump_file, " to ");
+		    print_generic_expr (dump_file, rhs, TDF_SLIM);
+		    fprintf (dump_file, " at BB%d\n", bb->index);
+		  }
+		vn_nary_op_t new_val
+		  = vn_nary_op_insert_pieces_predicated_1 (1, NOP_EXPR,
+							   slot->type, slot->op,
+							   rhs, 0, bb);
+		/* Push back-ref (result->slot) for new equivalence.  */
+		if (TREE_CODE (rhs) == SSA_NAME)
+		  push_new_nary_ref (new_val, rhs_info);
+	      }
+	}
+      else
+	/* Predicated values are collected, to be re-inserted later.  */
+	for (vn_pval *pval = slot->u.values; pval; pval = pval->next)
+	  {
+	    if (!is_vn_valid_at_bb (pval, bb))
+	      continue;
+	    predicates.put (slot, pval->result);
+	    break;
+	  }
+    }
+
+  if (!predicates.is_empty () && dump_file && (dump_flags & TDF_DETAILS))
+    fprintf (dump_file, "Re-inserting %ld predicates...\n",
+	     predicates.elements ());
+  tree new_ops[3];
+  for (auto i = predicates.begin (), end = predicates.end (); i != end; ++i)
+    {
+      vn_nary_op_t slot = (*i).first;
+      tree result = (*i).second;
+      lookup_equiv_heads (slot->length, slot->op, new_ops, e->dest);
+      vn_nary_op_insert_pieces_predicated (slot->length, slot->opcode,
+					   slot->type, new_ops, result,
+					   slot->value_id, e);
+    }
+  return val;
+}
+
+/* Record temporary equivalences generated by PHI nodes, and are valid when
+   BB's outgoing edge E is taken.  VNO contains the interested expression.
+   RESULT is value that need to be ruled out.  */
+
+static void
+record_equiv_from_prev_phi_1 (vn_nary_op_t vno, edge e, basic_block bb,
+			      tree result)
+{
+  if (!(vno && vno->predicated_values))
+    return;
+
+  /* Process predicated values in VNO, looking for a conflicting result, and
+     the location's single_pred dominates BB.  */
   for (vn_pval *val = vno->u.values; val; val = val->next)
-    for (unsigned i = 0; i < val->n; ++i)
-      /* Do not handle backedge executability optimistically since
-	 when figuring out whether to iterate we do not consider
-	 changed predication.  */
-      if (dominated_by_p_w_unex
-	    (bb, BASIC_BLOCK_FOR_FN (cfun, val->valid_dominated_by_p[i]),
-	     false))
-	return val->result;
-  return NULL_TREE;
+    {
+      if (!expressions_equal_p (val->result, result))
+	continue;
+      /* Found a result to rule out, process each location.  */
+      for (unsigned i = 0; i < val->n; ++i)
+	{
+	  basic_block bb1
+	    = BASIC_BLOCK_FOR_FN (cfun, val->valid_dominated_by_p[i]);
+	  if (!single_pred_p (bb1))
+	    continue;
+	  basic_block p = single_pred (bb1);
+	  if (!dominated_by_p_w_unex (bb, p, false))
+	    continue;
+	  gcc_assert (EDGE_COUNT (p->succs) == 2);
+	  /* Iterate on possible phi_bbs (can be BB itself). Considering
+	     non-executable edges, there can be multiple phi_bbs.  */
+	  for (basic_block phi_bb : get_dominated_by (CDI_DOMINATORS, p))
+	    {
+	      if (!dominated_by_p_w_unex (bb, phi_bb, false))
+		continue;
+	      /* Process PHIs, rule out incoming edges that definitely come
+		 from p->bb1.  If there's a single PHI argument X left, record
+		 the equivalence of X and PHI result at edge e.  */
+	      for (gphi_iterator gsi = gsi_start_nonvirtual_phis (phi_bb);
+		   !gsi_end_p (gsi); gsi_next_nonvirtual_phi (&gsi))
+		{
+		  gphi *phi = gsi.phi ();
+		  tree equiv = NULL_TREE;
+		  for (unsigned j = 0; j < gimple_phi_num_args (phi); ++j)
+		    {
+		      edge in = gimple_phi_arg_edge (phi, j);
+		      if (in->src == bb1
+			  || dominated_by_p_w_unex (in->src, bb1, false))
+			/* Definitely comes from p->bb1.  */
+			continue;
+		      tree arg = vn_valueize (gimple_phi_arg_def (phi, j));
+		      if (equiv && equiv != arg)
+			{
+			  equiv = NULL_TREE;
+			  break;
+			}
+		      equiv = arg;
+		    }
+		  if (equiv)
+		    val_equiv_insert (equiv, PHI_RESULT (phi), e);
+		}
+	    }
+	}
+    }
+}
+
+/* Record temporary equivalences generated by PHI nodes, and are valid when
+   BB's outgoing edge E is taken.  CODE, OPS and RESULT are the condition and
+   result for E to be taken.  VNO contains the condition's results recorded in
+   nary map.
+
+   The idea is to find a conflicting predicate at some location L, where L's
+   predecessor P dominates BB, so we know path P->L will not be taken if E is
+   taken.  If by ruling out P->L can generate some equivalences, record them at
+   E->dest.  */
+
+static void
+record_equiv_from_prev_phi (vn_nary_op_t vno, edge e, basic_block bb,
+			    tree_code code, tree *ops, tree result)
+{
+  if (!vn_tracking_edge (e))
+    return;
+  tree reverse
+    = result == boolean_true_node ? boolean_false_node : boolean_true_node;
+  record_equiv_from_prev_phi_1 (vno, e, bb, reverse);
+
+  /* For predicates like "a==b is false" or "a!=b is true", conflicting results
+     are equivalences, i.e. "NO_OP (a) is b" or "NO_OP (b) is a".  */
+  if ((result == boolean_true_node
+       && (code == NE_EXPR || code == GT_EXPR || code == LT_EXPR))
+      || (result == boolean_false_node && code == EQ_EXPR))
+    {
+      vn_nary_op_t vnresult;
+      if (TREE_CODE (ops[0]) == SSA_NAME)
+	{
+	  vn_nary_op_lookup_pieces (1, NOP_EXPR, TREE_TYPE (ops[0]), ops,
+				    &vnresult);
+	  record_equiv_from_prev_phi_1 (vnresult, e, bb, ops[1]);
+	}
+      if (TREE_CODE (ops[1]) == SSA_NAME)
+	{
+	  vn_nary_op_lookup_pieces (1, NOP_EXPR, TREE_TYPE (ops[1]), &ops[1],
+				    &vnresult);
+	  record_equiv_from_prev_phi_1 (vnresult, e, bb, ops[0]);
+	}
+    }
 }
 
 /* Insert the rhs of STMT into the current hash table with a value number of
@@ -4973,8 +5386,25 @@ static bool
 visit_nary_op (tree lhs, gassign *stmt)
 {
   vn_nary_op_t vnresult;
-  tree result = vn_nary_op_lookup_stmt (stmt, &vnresult);
-  if (! result && vnresult)
+  unsigned length = vn_nary_length_from_stmt (stmt);
+  vn_nary_op_t vno
+    = XALLOCAVAR (struct vn_nary_op_s, sizeof_vn_nary_op (length));
+  init_vn_nary_op_from_stmt (vno, stmt);
+  tree result = NULL_TREE;
+  /* Try to get a simplified result.  */
+  /* Do not simplify variable used in PHI at loop exit, or
+     simplify_peeled_chrec/constant_after_peeling may miss the loop.  */
+  gimple *use_stmt;
+  use_operand_p use_p;
+  if (!(single_imm_use (lhs, &use_p, &use_stmt)
+	&& gimple_code (use_stmt) == GIMPLE_PHI
+	&& single_succ_p (gimple_bb (use_stmt))
+	&& (single_succ_edge (gimple_bb (use_stmt))->flags & EDGE_DFS_BACK)))
+    result = fold_const_from_equiv_heads (vno->length, vno->opcode, vno->op,
+					  vno->type);
+  if (!result)
+    result = vn_nary_op_lookup_1 (vno, &vnresult);
+  if (!result && vnresult)
     result = vn_nary_op_get_predicated_value (vnresult, gimple_bb (stmt));
   if (result)
     return set_ssa_val_to (lhs, result);
@@ -7382,12 +7812,8 @@ insert_related_predicates_on_edge (enum tree_code code, tree *ops, edge pred_e)
 					   ops, boolean_false_node, 0, pred_e);
       break;
     case EQ_EXPR:
-      /* a == b -> ! a {<,>} b */
-      vn_nary_op_insert_pieces_predicated (2, LT_EXPR, boolean_type_node,
-					   ops, boolean_false_node, 0, pred_e);
-      vn_nary_op_insert_pieces_predicated (2, GT_EXPR, boolean_type_node,
-					   ops, boolean_false_node, 0, pred_e);
-      break;
+      /* No need to insert derived predicates for '==', as they can be computed
+	 by equiv-heads & fold_const_from_equiv_heads.  */
     case LE_EXPR:
     case GE_EXPR:
     case NE_EXPR:
@@ -7554,24 +7980,31 @@ process_bb (rpo_elim &avail, basic_block bb,
       switch (gimple_code (last))
 	{
 	case GIMPLE_SWITCH:
+	  /* TODO: utilize temporary equivalences.  */
 	  e = find_taken_edge (bb, vn_valueize (gimple_switch_index
 						(as_a <gswitch *> (last))));
 	  break;
 	case GIMPLE_COND:
 	  {
-	    tree lhs = vn_valueize (gimple_cond_lhs (last));
-	    tree rhs = vn_valueize (gimple_cond_rhs (last));
-	    tree val = gimple_simplify (gimple_cond_code (last),
-					boolean_type_node, lhs, rhs,
-					NULL, vn_valueize);
+	    tree lhs = lookup_equiv_head (gimple_cond_lhs (last), bb);
+	    tree rhs = lookup_equiv_head (gimple_cond_rhs (last), bb);
+	    tree ops[2];
+	    ops[0] = lhs;
+	    ops[1] = rhs;
+	    tree val = fold_const_from_equiv_heads (2, gimple_cond_code (last),
+						    ops, boolean_type_node);
+	    if (val && (dump_flags & TDF_DETAILS))
+	      {
+		fprintf (dump_file, "Got simplified result ");
+		print_generic_expr (dump_file, val, TDF_NONE);
+		fprintf (dump_file, " for ");
+		print_gimple_stmt (dump_file, last, TDF_SLIM);
+	      }
+	    vn_nary_op_t vnresult = NULL;
 	    /* If the condition didn't simplfy see if we have recorded
 	       an expression from sofar taken edges.  */
 	    if (! val || TREE_CODE (val) != INTEGER_CST)
 	      {
-		vn_nary_op_t vnresult;
-		tree ops[2];
-		ops[0] = lhs;
-		ops[1] = rhs;
 		val = vn_nary_op_lookup_pieces (2, gimple_cond_code (last),
 						boolean_type_node, ops,
 						&vnresult);
@@ -7602,15 +8035,17 @@ process_bb (rpo_elim &avail, basic_block bb,
 		enum tree_code code = gimple_cond_code (last);
 		enum tree_code icode
 		  = invert_tree_comparison (code, HONOR_NANS (lhs));
-		tree ops[2];
-		ops[0] = lhs;
-		ops[1] = rhs;
 		if (do_region
 		    && bitmap_bit_p (exit_bbs, true_e->dest->index))
 		  true_e = NULL;
 		if (do_region
 		    && bitmap_bit_p (exit_bbs, false_e->dest->index))
 		  false_e = NULL;
+		if (true_e || false_e)
+		  {
+		    ops[0] = lookup_equiv_head (lhs, bb);
+		    ops[1] = lookup_equiv_head (rhs, bb);
+		  }
 		if (true_e)
 		  vn_nary_op_insert_pieces_predicated
 		    (2, code, boolean_type_node, ops,
@@ -7639,6 +8074,15 @@ process_bb (rpo_elim &avail, basic_block bb,
 		    if (false_e)
 		      insert_related_predicates_on_edge (icode, ops, false_e);
 		  }
+
+		/* Try to record equivalences generated by previous PHI nodes
+		    on current true & false edges.  */
+		if (true_e)
+		  record_equiv_from_prev_phi (vnresult, true_e, bb, code, ops,
+					      boolean_true_node);
+		if (false_e)
+		  record_equiv_from_prev_phi (vnresult, false_e, bb, code, ops,
+					      boolean_false_node);
 	      }
 	    break;
 	  }
@@ -7761,6 +8205,7 @@ struct unwind_state
   vn_phi_t phi_top;
   vn_nary_op_t nary_top;
   vn_avail *avail_top;
+  nary_ref *nary_ref_top;
 };
 
 /* Unwind the RPO VN state for iteration.  */
@@ -7809,6 +8254,17 @@ do_unwind (unwind_state *to, rpo_elim &avail)
       last_pushed_avail = av->next_undo;
       av->next = avail.m_avail_freelist;
       avail.m_avail_freelist = av;
+    }
+  /* Drain nary_refs to freelist, to reuse the memory.  */
+  for (; last_pushed_nary_ref && last_pushed_nary_ref->ref != to->nary_ref_top;)
+    {
+      vn_ssa_aux_t val = last_pushed_nary_ref;
+      nary_ref *ref = val->ref;
+      val->ref = ref->next;
+      last_pushed_nary_ref = ref->next_undo;
+      ref->next = nary_ref_freelist;
+      nary_ref_freelist = ref;
+      --val->num_nary_ref;
     }
 }
 
@@ -7924,6 +8380,8 @@ do_rpo_vn (function *fn, edge entry, bitmap exit_bbs,
   last_inserted_phi = NULL;
   last_inserted_nary = NULL;
   last_pushed_avail = NULL;
+  last_pushed_nary_ref = NULL;
+  nary_ref_freelist = NULL;
 
   vn_valueize = rpo_vn_valueize;
 
@@ -8018,6 +8476,8 @@ do_rpo_vn (function *fn, edge entry, bitmap exit_bbs,
 	    rpo_state[idx].nary_top = last_inserted_nary;
 	    rpo_state[idx].avail_top
 	      = last_pushed_avail ? last_pushed_avail->avail : NULL;
+	    rpo_state[idx].nary_ref_top
+	      = last_pushed_nary_ref ? last_pushed_nary_ref->ref : NULL;
 	  }
 
 	if (!(bb->flags & BB_EXECUTABLE))
@@ -8296,7 +8756,23 @@ pass_fre::execute (function *fun)
   bool iterate_p = may_iterate && (optimize > 1);
   calculate_dominance_info (CDI_DOMINATORS);
   if (iterate_p)
-    loop_optimizer_init (AVOID_CFG_MODIFICATIONS);
+    {
+      /* Insert empty blocks as branch targets if the original target has
+	 multiple predessesor, so that all predicates can be recorded. */
+      basic_block bb;
+      edge e;
+      edge_iterator ei;
+      FOR_ALL_BB_FN (bb, cfun)
+	{
+	  gimple *stmt = last_stmt (bb);
+	  if (!stmt || gimple_code (stmt) != GIMPLE_COND)
+	    continue;
+	  FOR_EACH_EDGE (e, ei, bb->succs)
+	    if (!single_pred_p (e->dest))
+	      split_edge (e);
+	}
+      loop_optimizer_init (AVOID_CFG_MODIFICATIONS);
+    }
 
   todo = do_rpo_vn (fun, NULL, NULL, iterate_p, true, VN_WALKREWRITE);
   free_rpo_vn ();
@@ -8311,6 +8787,8 @@ pass_fre::execute (function *fun)
      remove some TREE_ADDRESSABLE and rewrite stuff into SSA.  */
   if (!may_iterate)
     todo |= TODO_update_address_taken;
+  if (iterate_p)
+    todo |= TODO_cleanup_cfg;
 
   return todo;
 }

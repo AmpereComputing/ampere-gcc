@@ -184,6 +184,9 @@ static bool reassoc_insert_powi_p;
    vectorization, since it interferes with reduction chains.  */
 static bool reassoc_bias_loop_carried_phi_ranks_p;
 
+/* Whether in last reassoc pass.  */
+static bool reassoc_is_the_last_p;
+
 /* Statistics */
 static struct
 {
@@ -3548,7 +3551,7 @@ optimize_range_tests_cmp_bitwise (enum tree_code opcode, int first, int length,
 		  reassoc pass, as it interferes with the reassociation
 		  itself or could also with VRP etc. which might not
 		  be able to virtually undo the optimization.  */
-	       && !reassoc_insert_powi_p
+	       && reassoc_is_the_last_p
 	       && !TYPE_UNSIGNED (TREE_TYPE (ranges[i].exp))
 	       && integer_zerop (ranges[i].low))
 	idx = 3;
@@ -6842,7 +6845,7 @@ reassociate_bb (basic_block bb)
 		  /* Only rewrite the expression tree to parallel in the
 		     last reassoc pass to avoid useless work back-and-forth
 		     with initial linearization.  */
-		  if (!reassoc_insert_powi_p
+		  if (reassoc_is_the_last_p
 		      && ops.length () > 3
 		      && (width = get_reassociation_width (ops_num, rhs_code,
 							   mode)) > 1)
@@ -7099,15 +7102,19 @@ fini_reassoc (void)
 }
 
 /* Gate and execute functions for Reassociation.  If INSERT_POWI_P, enable
-   insertion of __builtin_powi calls.
+   insertion of __builtin_powi calls. If IS_THE_LAST_REASSOC_P, which means
+   this is the last reassoc pass, then transform expression tree to parallel
+   if possible.
 
    Returns TODO_cfg_cleanup if a CFG cleanup pass is desired due to
    optimization of a gimple conditional.  Otherwise returns zero.  */
 
-static unsigned int
-execute_reassoc (bool insert_powi_p, bool bias_loop_carried_phi_ranks_p)
+unsigned int
+execute_reassoc (bool insert_powi_p, bool bias_loop_carried_phi_ranks_p,
+		 bool is_the_last_reassoc_p)
 {
   reassoc_insert_powi_p = insert_powi_p;
+  reassoc_is_the_last_p = is_the_last_reassoc_p;
   reassoc_bias_loop_carried_phi_ranks_p = bias_loop_carried_phi_ranks_p;
 
   init_reassoc ();
@@ -7154,7 +7161,8 @@ public:
   virtual bool gate (function *) { return flag_tree_reassoc != 0; }
   virtual unsigned int execute (function *)
   {
-    return execute_reassoc (insert_powi_p, bias_loop_carried_phi_ranks_p);
+    return execute_reassoc (insert_powi_p, bias_loop_carried_phi_ranks_p,
+			    !insert_powi_p);
   }
 
  private:

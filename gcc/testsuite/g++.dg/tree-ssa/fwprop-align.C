@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-forwprop2" } */
+/* { dg-options "-O2 -fdump-tree-forwprop4" } */
 
 struct A
 {
@@ -16,4 +16,4 @@ int main()
 }
 
 /* We should eliminate the check if p points to a virtual function. */
-/* { dg-final { scan-tree-dump-times "& 1" 0 "forwprop2" } } */
+/* { dg-final { scan-tree-dump-times "& 1" 0 "forwprop4" } } */

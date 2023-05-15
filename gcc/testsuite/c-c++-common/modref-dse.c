@@ -1,6 +1,6 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-dse2-details" } */
-/* { dg-final { scan-tree-dump-not "Deleted dead store" "dse2" } } */
+/* { dg-options "-O2 -fdump-tree-dse3-details" } */
+/* { dg-final { scan-tree-dump-not "Deleted dead store" "dse3" } } */
 
 struct foo { unsigned long bar; };
 

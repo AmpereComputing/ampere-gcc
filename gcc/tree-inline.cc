@@ -1027,10 +1027,17 @@ remap_gimple_op_r (tree *tp, int *walk_subtrees, void *data)
 
   if (TREE_CODE (*tp) == SSA_NAME)
     {
+      tree old = *tp;
+
       *tp = remap_ssa_name (*tp, id);
       *walk_subtrees = 0;
       if (is_lhs)
-	SSA_NAME_DEF_STMT (*tp) = wi_p->stmt;
+	{
+	  if (SSA_NAME_DEF_STMT (old) == wi_p->stmt)
+	    SSA_NAME_DEF_STMT (old) = gimple_build_nop ();
+
+	  SSA_NAME_DEF_STMT (*tp) = wi_p->stmt;
+	}
       return NULL;
     }
   else if (auto_var_in_fn_p (*tp, fn))
@@ -2244,13 +2251,15 @@ copy_bb (copy_body_data *id, basic_block bb,
 		  edge = id->src_node->get_edge (orig_stmt);
 		  if (edge)
 		    {
+		      if (edge->guarded_specialization_edge_p ())
+			edge = edge->specialized_call_base_edge ();
 		      struct cgraph_edge *old_edge = edge;
-
+		      struct cgraph_edge *speculative_specialized_edge = NULL;
 		      /* A speculative call is consist of multiple
 			 edges - indirect edge and one or more direct edges
 			 Duplicate the whole thing and distribute frequencies
 			 accordingly.  */
-		      if (edge->speculative)
+		      if (old_edge->speculative)
 			{
 			  int n = 0;
 			  profile_count direct_cnt
@@ -2287,6 +2296,10 @@ copy_bb (copy_body_data *id, basic_block bb,
 					 (prob);
 			      n++;
 			    }
+
+			  if (old_edge->specialized)
+			    speculative_specialized_edge = edge;
+
 			  gcc_checking_assert
 				 (indirect->num_speculative_call_targets_p ()
 				  == n);
@@ -2304,7 +2317,67 @@ copy_bb (copy_body_data *id, basic_block bb,
 			  indirect->count
 			     = copy_basic_block->count.apply_probability (prob);
 			}
-		      else
+		      /* A specialized call is consist of multiple
+			 edges - a base edge and one or more specialized edges.
+			 Duplicate and distribute frequencies in a way similar
+			 to the speculative edges.  */
+		      if (old_edge->specialized)
+			{
+			  int n = 0;
+			  cgraph_edge *first
+				 = old_edge->first_specialized_call_target ();
+			  profile_count spec_cnt
+				 = profile_count::zero ();
+
+			  /* First figure out the distribution of counts
+			     so we can re-scale BB profile accordingly.  */
+			  for (cgraph_edge *e = first; e;
+			       e = e->next_specialized_call_target ())
+			    spec_cnt = spec_cnt + e->count;
+
+			  cgraph_edge *base
+				 = old_edge->specialized_call_base_edge ();
+			  profile_count base_cnt = base->count;
+
+			  /* Next iterate all specializations, clone them
+			     and update the profile.  */
+			  for (cgraph_edge *e = first; e;
+			       e = e->next_specialized_call_target ())
+			    {
+			      profile_count cnt = e->count;
+
+			      edge = e->clone (id->dst_node, call_stmt,
+					       gimple_uid (stmt), num, den,
+					       true);
+			      profile_probability prob
+				 = cnt.probability_in (spec_cnt
+						       + base_cnt);
+			      edge->count
+				 = copy_basic_block->count.apply_probability
+					 (prob);
+			      n++;
+			    }
+
+			  /* Duplicate the base edge after all specialized
+			     edges cloned.  */
+			  if (old_edge->speculative)
+			    base = speculative_specialized_edge;
+			  else
+			  {
+			    base = base->clone (id->dst_node, call_stmt,
+						gimple_uid (stmt),
+						num, den,
+						true);
+			  }
+
+			  profile_probability prob
+			     = base_cnt.probability_in (spec_cnt
+							 + base_cnt);
+			  base->count
+			     = copy_basic_block->count.apply_probability (prob);
+			}
+
+		      if (!old_edge->speculative && !old_edge->specialized)
 			{
 			  edge = edge->clone (id->dst_node, call_stmt,
 					      gimple_uid (stmt),
@@ -2996,6 +3069,9 @@ redirect_all_calls (copy_body_data * id, basic_block bb)
 	  struct cgraph_edge *edge = id->dst_node->get_edge (stmt);
 	  if (edge)
 	    {
+	      if (edge->guarded_specialization_edge_p ())
+		edge = edge->specialized_call_base_edge ();
+
 	      gimple *new_stmt
 		= cgraph_edge::redirect_call_stmt_to_callee (edge);
 	      /* If IPA-SRA transformation, run as part of edge redirection,

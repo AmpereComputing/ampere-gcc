@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-forwprop3-raw -w -Wno-psabi" } */
+/* { dg-options "-O2 -fdump-tree-forwprop5-raw -w -Wno-psabi" } */
 
 typedef long vec __attribute__((vector_size(16)));
 vec f(vec x){
@@ -7,4 +7,4 @@ vec f(vec x){
   return y & (y == 0);
 }
 
-/* { dg-final { scan-tree-dump-not "_expr" "forwprop3" } } */
+/* { dg-final { scan-tree-dump-not "_expr" "forwprop5" } } */

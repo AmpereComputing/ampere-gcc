@@ -1004,6 +1004,7 @@ pass_manager::dump_passes () const
   dump_pass_list (all_lowering_passes, 1);
   dump_pass_list (all_small_ipa_passes, 1);
   dump_pass_list (all_regular_ipa_passes, 1);
+  dump_pass_list (all_regular_ipa_wpt_passes, 1);
   dump_pass_list (all_late_ipa_passes, 1);
   dump_pass_list (all_passes, 1);
 
@@ -1514,6 +1515,8 @@ pass_manager::register_pass (struct register_pass_info *pass_info)
   if (!success || all_instances)
     success |= position_pass (pass_info, &all_regular_ipa_passes);
   if (!success || all_instances)
+    success |= position_pass (pass_info, &all_regular_ipa_wpt_passes);
+  if (!success || all_instances)
     success |= position_pass (pass_info, &all_late_ipa_passes);
   if (!success || all_instances)
     success |= position_pass (pass_info, &all_passes);
@@ -1555,6 +1558,7 @@ pass_manager::register_pass (struct register_pass_info *pass_info)
 					-> Analysis of all_regular_ipa_passes
 	* possible LTO streaming at copmilation time *
 					-> Execution of all_regular_ipa_passes
+					-> Execution of all_regular_ipa_wpt_passes
 	* possible LTO streaming at link time *
 					-> all_late_ipa_passes
        expand_all_functions ()
@@ -1565,7 +1569,7 @@ pass_manager::register_pass (struct register_pass_info *pass_info)
 
 pass_manager::pass_manager (context *ctxt)
 : all_passes (NULL), all_small_ipa_passes (NULL), all_lowering_passes (NULL),
-  all_regular_ipa_passes (NULL),
+  all_regular_ipa_passes (NULL), all_regular_ipa_wpt_passes (NULL),
   all_late_ipa_passes (NULL), passes_by_id (NULL), passes_by_id_size (0),
   m_ctxt (ctxt), m_name_to_pass_map (NULL)
 {
@@ -1574,6 +1578,7 @@ pass_manager::pass_manager (context *ctxt)
   /* Zero-initialize pass members.  */
 #define INSERT_PASSES_AFTER(PASS)
 #define PUSH_INSERT_PASSES_WITHIN(PASS)
+#define PUSH_INSERT_PASSES_WITHIN_NUM(PASS, NUM)
 #define POP_INSERT_PASSES()
 #define NEXT_PASS(PASS, NUM) PASS ## _ ## NUM = NULL
 #define NEXT_PASS_WITH_ARG(PASS, NUM, ARG) NEXT_PASS (PASS, NUM)
@@ -1581,6 +1586,7 @@ pass_manager::pass_manager (context *ctxt)
 #include "pass-instances.def"
 #undef INSERT_PASSES_AFTER
 #undef PUSH_INSERT_PASSES_WITHIN
+#undef PUSH_INSERT_PASSES_WITHIN_NUM
 #undef POP_INSERT_PASSES
 #undef NEXT_PASS
 #undef NEXT_PASS_WITH_ARG
@@ -1606,6 +1612,10 @@ pass_manager::pass_manager (context *ctxt)
 #define PUSH_INSERT_PASSES_WITHIN(PASS) \
   { \
     opt_pass **p = &(PASS ## _1)->sub;
+
+#define PUSH_INSERT_PASSES_WITHIN_NUM(PASS, NUM) \
+  { \
+    opt_pass **p = &(PASS ## _ ## NUM)->sub;
 
 #define POP_INSERT_PASSES() \
   }
@@ -1642,6 +1652,7 @@ pass_manager::pass_manager (context *ctxt)
   register_dump_files (all_lowering_passes);
   register_dump_files (all_small_ipa_passes);
   register_dump_files (all_regular_ipa_passes);
+  register_dump_files (all_regular_ipa_wpt_passes);
   register_dump_files (all_late_ipa_passes);
   register_dump_files (all_passes);
 }
@@ -3143,6 +3154,61 @@ execute_all_ipa_stmt_fixups (struct cgraph_node *node, gimple **stmts)
   execute_ipa_stmt_fixups (passes->all_regular_ipa_passes, node, stmts);
 }
 
+/* Execute whole program transformations after regular IPA analysis stage.
+   These transformations requires availability of function bodies.  */
+
+void
+execute_regular_ipa_post_whole_program_transforms (void)
+{
+  symtab_node *symbol;
+  cgraph_node *node;
+
+  timevar_push (TV_WHOPR_WPT);
+
+  symtab->global_info_ready = true;
+  current_pass = NULL;
+
+  FOR_EACH_SYMBOL (symbol)
+    {
+      if (varpool_node *vnode = dyn_cast <varpool_node *> (symbol))
+	{
+	  if (!DECL_EXTERNAL (vnode->decl) && !vnode->alias)
+	    vnode->get_constructor ();
+	}
+      else
+	{
+	  node = as_a <cgraph_node *> (symbol);
+	  if (node->has_gimple_body_p () && !node->inlined_to)
+	    node->get_body ();
+	}
+    }
+
+  if (flag_checking)
+    {
+      FOR_EACH_FUNCTION (node)
+	gcc_assert (!node->inlined_to && !node->clone_of);
+    }
+
+  execute_ipa_pass_list (g->get_passes ()->all_regular_ipa_wpt_passes);
+
+  current_pass = NULL;
+
+  FOR_EACH_FUNCTION_WITH_GIMPLE_BODY (node)
+    {
+      function *fun = DECL_STRUCT_FUNCTION (node->decl);
+
+      /* Removal of unused function node requires that it contains no
+	 dominance information.  */
+      free_dominance_info (fun, CDI_DOMINATORS);
+      free_dominance_info (fun, CDI_POST_DOMINATORS);
+    }
+
+  /* Clean up functions that are made to be unused due to optimizations
+     in regular late ipa passes.  */
+  symtab->remove_unreachable_nodes (symtab->dump_file);
+
+  timevar_pop (TV_WHOPR_WPT);
+}
 
 extern void debug_properties (unsigned int);
 extern void dump_properties (FILE *, unsigned int);

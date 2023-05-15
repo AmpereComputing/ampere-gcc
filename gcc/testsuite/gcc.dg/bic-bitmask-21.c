@@ -20,6 +20,6 @@ void fun2(int32_t *x, int n)
 #define TYPE int32_t
 #include "bic-bitmask.h"
 
-/* { dg-final { scan-tree-dump {<=\s* 255} dce7 { target vect_int } } } */
-/* { dg-final { scan-tree-dump-not {&\s* 4294967290} dce7 { target vect_int } } } */
+/* { dg-final { scan-tree-dump {<=\s* 255} dce8 { target vect_int } } } */
+/* { dg-final { scan-tree-dump-not {&\s* 4294967290} dce8 { target vect_int } } } */
 

@@ -117,6 +117,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "symbol-summary.h"
 #include "tree-vrp.h"
 #include "ipa-prop.h"
+#include "gimple-pretty-print.h"
 #include "tree-pretty-print.h"
 #include "tree-inline.h"
 #include "ipa-fnsummary.h"
@@ -2358,6 +2359,9 @@ propagate_context_across_jump_function (cgraph_edge *cs,
   return ret;
 }
 
+edge_align_map *callsite_data = NULL;
+edge_align_map *callsite_data2 = NULL;
+
 /* Propagate bits across jfunc that is associated with
    edge cs and update dest_lattice accordingly.  */
 
@@ -2368,6 +2372,13 @@ propagate_bits_across_jump_function (cgraph_edge *cs, int idx,
 {
   if (dest_lattice->bottom_p ())
     return false;
+
+  if (flag_ipa_alignment_analysis_and_transformation
+      && !callsite_data && !callsite_data2)
+    {
+      callsite_data = new edge_align_map ();
+      callsite_data2 = new edge_align_map ();
+    }
 
   enum availability availability;
   cgraph_node *callee = cs->callee->function_symbol (&availability);
@@ -2435,16 +2446,122 @@ propagate_bits_across_jump_function (cgraph_edge *cs, int idx,
 	  bool drop_all_ones
 	    = keep_null && !src_lats->bits_lattice.known_nonzero_p ();
 
-	  return dest_lattice->meet_with (src_lats->bits_lattice, precision,
-					  sgn, code, operand, drop_all_ones);
+	  auto retval
+	    = dest_lattice->meet_with (src_lats->bits_lattice, precision, sgn,
+				       code, operand, drop_all_ones);
+
+	    if (flag_ipa_alignment_analysis_and_transformation
+		&& callsite_data
+		&& callsite_data2)
+	    {
+	      ipa_node_params *callee_info
+		= ipa_node_params_sum->get (cs->callee);
+	      if (dump_file)
+		fprintf (dump_file, "callee = %s\n", cs->callee->name ());
+	      if (idx == 0 && callee_info
+		  && idx < ipa_get_param_count (callee_info))
+		{
+		  ipcp_param_lattices *plats
+		    = ipa_get_parm_lattices (callee_info, idx);
+		  if (plats->bits_lattice.constant_p () && idx == 0)
+		    {
+		      ipa_bits *jfbits = ipa_get_ipa_bits_for_value (
+			plats->bits_lattice.get_value (),
+			plats->bits_lattice.get_mask ());
+		      alignment_data data;
+
+		      data.param = 0;
+		      if (!drop_all_ones && (jfbits->mask & 0x7) == 0
+			  && (jfunc->bits->value & ~(0x7)) == 0)
+			{
+			  // TODO: Alignment for 4 and 2?
+			  if (dump_file)
+			    fprintf (
+			      dump_file,
+			      "We know the alignment of first argument\n");
+			  data.alignment = 8;
+			}
+		      else
+			{
+			  if (dump_file)
+			    fprintf (dump_file, "We DON'T know the alignment "
+						"of first argument\n");
+			  data.alignment = 1;
+			}
+		      callsite_data->put (cs, data);
+		    }
+		}
+	    }
+	  return retval;
 	}
     }
 
   if (jfunc->bits)
-    return dest_lattice->meet_with (jfunc->bits->value, jfunc->bits->mask,
-				    precision);
+    {
+      if (flag_ipa_alignment_analysis_and_transformation
+	  && callsite_data
+	  && callsite_data2)
+	{
+	  ipa_node_params *callee_info = ipa_node_params_sum->get (cs->callee);
+	  if (dump_file)
+	    fprintf (dump_file, "callee = %s\n", cs->callee->name ());
+	  if (idx == 0 && callee_info
+	      && idx < ipa_get_param_count (callee_info))
+	    {
+	      ipcp_param_lattices *plats
+		= ipa_get_parm_lattices (callee_info, idx);
+	      if (plats->bits_lattice.constant_p () && idx == 0)
+		{
+		  ipa_bits *jfbits = ipa_get_ipa_bits_for_value (
+		    plats->bits_lattice.get_value (),
+		    plats->bits_lattice.get_mask ());
+		  alignment_data data;
+
+		  data.param = 0;
+		  if ((jfbits->mask & 0x7) == 0
+		      && (jfunc->bits->value & ~(0x7)) == 0)
+		    {
+		      // TODO: Alignment for 4 and 2?
+		      if (dump_file)
+			fprintf (dump_file,
+				 "We know the alignment of first argument\n");
+		      data.alignment = 8;
+		    }
+		  else
+		    {
+		      if (dump_file)
+			fprintf (
+			  dump_file,
+			  "We DON'T know the alignment of first argument\n");
+		      data.alignment = 1;
+		    }
+		  callsite_data->put (cs, data);
+		}
+	    }
+	}
+      return dest_lattice->meet_with (jfunc->bits->value, jfunc->bits->mask,
+				      precision);
+    }
   else
-    return dest_lattice->set_to_bottom ();
+    {
+      if (flag_ipa_alignment_analysis_and_transformation
+	  && callsite_data
+	  && callsite_data2)
+	{
+	  ipa_node_params *callee_info = ipa_node_params_sum->get (cs->callee);
+	  if (dump_file)
+	    fprintf (dump_file, "callee = %s\n", cs->callee->name ());
+	  if (idx == 0 && callee_info
+	      && idx < ipa_get_param_count (callee_info))
+	    {
+	      if (dump_file)
+		fprintf (dump_file, "We DON'T know the alignment of first "
+				    "argument in this other loaction\n");
+	      callsite_data->put (cs, { 0, 1 });
+	    }
+	}
+      return dest_lattice->set_to_bottom ();
+    }
 }
 
 /* Propagate value range across jump function JFUNC that is associated with
@@ -5063,16 +5180,20 @@ want_remove_some_param_p (cgraph_node *node, vec<tree> known_csts)
   return false;
 }
 
+static hash_map<cgraph_node*, auto_vec<cgraph_node*>> *available_specializations;
+
 /* Create a specialized version of NODE with known constants in KNOWN_CSTS,
    known contexts in KNOWN_CONTEXTS and known aggregate values in AGGVALS and
-   redirect all edges in CALLERS to it.  */
+   redirect all edges in CALLERS to it.  If IS_SPECULATIVE is true then this
+   node is created to be part of a guarded specialization edge.  */
 
 static struct cgraph_node *
 create_specialized_node (struct cgraph_node *node,
 			 vec<tree> known_csts,
 			 vec<ipa_polymorphic_call_context> known_contexts,
 			 struct ipa_agg_replacement_value *aggvals,
-			 vec<cgraph_edge *> &callers)
+			 vec<cgraph_edge *> &callers,
+			 bool is_speculative)
 {
   ipa_node_params *new_info, *info = ipa_node_params_sum->get (node);
   vec<ipa_replace_map *, va_gc> *replace_trees = NULL;
@@ -5208,7 +5329,7 @@ create_specialized_node (struct cgraph_node *node,
   for (av = aggvals; av; av = av->next)
     new_node->maybe_create_reference (av->value, NULL);
 
-  if (dump_file && (dump_flags & TDF_DETAILS))
+  if (dump_file && (dump_flags & TDF_DETAILS) && !is_speculative)
     {
       fprintf (dump_file, "     the new node is %s.\n", new_node->dump_name ());
       if (known_contexts.exists ())
@@ -5230,7 +5351,15 @@ create_specialized_node (struct cgraph_node *node,
   new_info->known_csts = known_csts;
   new_info->known_contexts = known_contexts;
 
-  ipcp_discover_new_direct_edges (new_node, known_csts, known_contexts, aggvals);
+  if (is_speculative && !info->ipcp_orig_node)
+    {
+      auto_vec<cgraph_node*> &spec_nodes
+	= available_specializations->get_or_insert (node);
+      spec_nodes.safe_push (new_node);
+    }
+
+  ipcp_discover_new_direct_edges (new_node, known_csts, known_contexts,
+				  aggvals);
 
   return new_node;
 }
@@ -6135,13 +6264,28 @@ decide_about_value (struct cgraph_node *node, int index, HOST_WIDE_INT offset,
       known_csts = avals->m_known_vals.copy ();
       known_contexts = copy_useful_known_contexts (avals->m_known_contexts);
     }
+
+  /* If guarded specialization is enabled then we create an additional
+     clone with KNOWN_CSTS and no known contexts or aggregates.
+     We don't want find_more_scalar_values because adding more constants
+     instreases the complexity of the guard and reduces the chance
+     that it is used.  */
+  if (flag_ipa_guarded_specialization && !val->self_recursion_generated_p ())
+    {
+      vec<cgraph_edge *> no_callers = vNULL;
+      cgraph_node *guarded_spec_node
+	= create_specialized_node (node, known_csts.copy (), vNULL,
+						 NULL, no_callers, true);
+      update_profiling_info (node, guarded_spec_node);
+    }
+
   find_more_scalar_values_for_callers_subset (node, known_csts, callers);
   find_more_contexts_for_caller_subset (node, &known_contexts, callers);
   aggvals = find_aggregate_values_for_callers_subset (node, callers);
   gcc_checking_assert (ipcp_val_agg_replacement_ok_p (aggvals, index,
 						      offset, val->value));
   val->spec_node = create_specialized_node (node, known_csts, known_contexts,
-					    aggvals, callers);
+					    aggvals, callers, false);
 
   if (val->self_recursion_generated_p ())
     self_gen_clones->safe_push (val->spec_node);
@@ -6297,7 +6441,7 @@ decide_whether_version_node (struct cgraph_node *node)
 	  known_contexts = vNULL;
 	}
       clone = create_specialized_node (node, known_csts, known_contexts,
-				       aggvals, callers);
+				       aggvals, callers, false);
       info->do_clone_for_all_contexts = false;
       ipa_node_params_sum->get (clone)->is_all_contexts_clone = true;
       ret = true;
@@ -6431,6 +6575,26 @@ ipcp_store_bits_results (void)
 
   FOR_EACH_FUNCTION_WITH_GIMPLE_BODY (node)
     {
+      if (flag_ipa_alignment_analysis_and_transformation
+	  && callsite_data
+	  && callsite_data2)
+	{
+	  for (cgraph_edge *e = node->callers; e; e = e->next_caller)
+	    {
+	      if (!edge_clone_summaries->get (e))
+		continue;
+
+	      if (auto *p = edge_clone_summaries->get (e)->prev_clone)
+		{
+		  if (!callsite_data->get (p))
+		    continue;
+
+		  if (auto *data = callsite_data->get (p))
+		    callsite_data2->put (e, *data);
+		}
+	    }
+	}
+
       ipa_node_params *info = ipa_node_params_sum->get (node);
       bool dumped_sth = false;
       bool found_useful_result = false;
@@ -6573,6 +6737,155 @@ ipcp_store_vr_results (void)
     }
 }
 
+/* Add new edges to the call graph to represent the available specializations
+   of each specialized function.  */
+static void
+add_specialized_edges (void)
+{
+  cgraph_edge *e;
+  cgraph_node *n, *spec_n;
+  tree known_cst;
+  unsigned i, j;
+
+  FOR_EACH_DEFINED_FUNCTION (n)
+    {
+      if (dump_file && n->callees)
+	fprintf (dump_file,
+		 "Procesing function %s for specialization of edges.\n",
+		 n->dump_name ());
+
+      if (n->ipcp_clone)
+	continue;
+
+      bool update = false;
+      for (e = n->callees; e; e = e->next_callee)
+	{
+	  if (!e->callee || e->recursive_p ())
+	    continue;
+
+	  auto_vec<cgraph_node*> *specialization_nodes
+	    = available_specializations->get (e->callee);
+	  cgraph_node *redirect_to_orig = NULL;
+
+	  /* Even if the calle is a specialized node it is still valid to
+	     further create guarded specializations based on the original node.
+	     If the existing specialized node doesn't have any known constants
+	     then it is probably profitable to specialize further.  */
+	  if (e->callee->ipcp_clone && !specialization_nodes)
+	    {
+	      ipa_node_params *info
+		= ipa_node_params_sum->get (e->callee);
+	      gcc_checking_assert (info->ipcp_orig_node);
+
+	      bool has_known_constant = false;
+	      FOR_EACH_VEC_ELT (info->known_csts, i, known_cst)
+		if (known_cst != NULL_TREE)
+		  {
+		    has_known_constant = true;
+		    break;
+		  }
+
+	      if (!has_known_constant)
+		{
+		  auto_vec<cgraph_node*> *orig_specialization_nodes
+		    = available_specializations->get (info->ipcp_orig_node);
+
+		  if (orig_specialization_nodes)
+		    {
+		      redirect_to_orig = info->ipcp_orig_node;
+		      specialization_nodes = orig_specialization_nodes;
+		    }
+		}
+	    }
+
+	  if (!specialization_nodes)
+	    continue;
+
+	  unsigned num_of_specializations = 0;
+	  unsigned max_num_of_specializations = opt_for_fn (n->decl,
+						  param_ipa_spec_max_per_edge);
+
+	  FOR_EACH_VEC_ELT (*specialization_nodes, i, spec_n)
+	    {
+	      if (dump_file)
+		fprintf (dump_file,
+			 "Edge has available specialization %s.\n",
+			 spec_n->dump_name ());
+
+	      ipa_node_params *spec_params = ipa_node_params_sum->get (spec_n);
+	      auto_vec<cgraph_specialization_info> replaced_args;
+	      bool failed = false;
+
+	      FOR_EACH_VEC_ELT (spec_params->known_csts, j, known_cst)
+		{
+		  if (known_cst != NULL_TREE)
+		    {
+		      if (TREE_CODE (known_cst) == INTEGER_CST
+			  && TYPE_UNSIGNED (TREE_TYPE (known_cst))
+			  && tree_fits_uhwi_p (known_cst))
+			{
+			      cgraph_specialization_info spec_info;
+			      spec_info.arg_idx = j;
+			      spec_info.is_unsigned = 1;
+			      spec_info.cst.uval = tree_to_uhwi (known_cst);
+			      replaced_args.safe_push (spec_info);
+			}
+		      else if (TREE_CODE (known_cst) == INTEGER_CST
+			       && !TYPE_UNSIGNED (TREE_TYPE (known_cst))
+			       && tree_fits_shwi_p (known_cst))
+			{
+			      cgraph_specialization_info spec_info;
+			      spec_info.arg_idx = j;
+			      spec_info.is_unsigned = 0;
+			      spec_info.cst.uval = tree_to_shwi (known_cst);
+			      replaced_args.safe_push (spec_info);
+			}
+		      else
+			{
+			  failed = true;
+			  break;
+			}
+		    }
+		}
+
+	      unsigned max_guard_complexity = opt_for_fn (n->decl,
+					   param_ipa_spec_guard_complexity);
+
+	      if (!failed && replaced_args.length () > 0
+		  && (replaced_args.length () < max_guard_complexity
+		      || max_guard_complexity == 0))
+		{
+		  if (e->make_specialized (spec_n,
+					   &replaced_args,
+					   e->count.apply_scale (1, 10)))
+		    {
+		      if (redirect_to_orig)
+			{
+			  if (dump_file)
+			    fprintf (dump_file,
+				     "Replace callee %s with original %s\n",
+				     e->callee->dump_name(),
+				     redirect_to_orig->dump_name());
+			  e->redirect_callee (redirect_to_orig);
+			  redirect_to_orig = NULL;
+			}
+
+		      num_of_specializations++;
+		      update = true;
+
+		      if (num_of_specializations > max_num_of_specializations
+			  && max_num_of_specializations != 0)
+			break;
+		    }
+		}
+	    }
+	}
+
+      if (update)
+	ipa_update_overall_fn_summary (n);
+    }
+}
+
 /* The IPCP driver.  */
 
 static unsigned int
@@ -6586,6 +6899,7 @@ ipcp_driver (void)
   ipa_check_create_node_params ();
   ipa_check_create_edge_args ();
   clone_num_suffixes = new hash_map<const char *, unsigned>;
+  available_specializations = new hash_map<cgraph_node*, auto_vec<cgraph_node*>>;
 
   if (dump_file)
     {
@@ -6605,8 +6919,12 @@ ipcp_driver (void)
   ipcp_store_bits_results ();
   /* Store results of value range propagation.  */
   ipcp_store_vr_results ();
+  /* Add new edges for specializations.  */
+  if (flag_ipa_guarded_specialization)
+    add_specialized_edges ();
 
   /* Free all IPCP structures.  */
+  delete available_specializations;
   delete clone_num_suffixes;
   free_toporder_info (&topo);
   delete edge_clone_summaries;

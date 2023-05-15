@@ -187,6 +187,8 @@ input_gimple_stmt (class lto_input_block *ib, class data_in *data_in,
 	      (call_stmt, streamer_read_enum (ib, internal_fn, IFN_LAST));
 	  else
 	    gimple_call_set_fntype (call_stmt, stream_read_tree (ib, data_in));
+
+	  gimple_call_set_type_sizeof_type (call_stmt, stream_read_tree_ref (ib, data_in));
 	}
       break;
 

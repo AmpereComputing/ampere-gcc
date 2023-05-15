@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -ftree-cselim -Warray-bounds -fdump-tree-phiopt2" } */
+/* { dg-options "-O2 -ftree-cselim -Warray-bounds -fdump-tree-phiopt3" } */
 
 void
 h (const void *p, unsigned n)
@@ -19,4 +19,4 @@ h (const void *p, unsigned n)
     }
 }
 
-/* { dg-final { scan-tree-dump "MIN_EXPR" "phiopt2" } } */
+/* { dg-final { scan-tree-dump "MIN_EXPR" "phiopt3" } } */

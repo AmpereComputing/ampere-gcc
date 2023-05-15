@@ -513,8 +513,11 @@ linemap_add (line_maps *set, enum lc_reason reason,
   linemap_assert (reason != LC_ENTER_MACRO);
 
   if (start_location >= LINE_MAP_MAX_LOCATION)
-    /* We ran out of line map space.   */
-    start_location = 0;
+    {
+      /* We ran out of line map space.   */
+      start_location = 0;
+      return NULL;
+    }
 
   line_map_ordinary *map
     = linemap_check_ordinary (new_linemap (set, start_location));
@@ -599,13 +602,15 @@ linemap_add (line_maps *set, enum lc_reason reason,
 location_t
 linemap_module_loc (line_maps *set, location_t from, const char *name)
 {
-  const line_map_ordinary *map
-    = linemap_check_ordinary (linemap_add (set, LC_MODULE, false, name, 0));
-  const_cast <line_map_ordinary *> (map)->included_from = from;
+  if (const line_map_ordinary *map
+       = linemap_check_ordinary (linemap_add (set, LC_MODULE, false, name, 0)))
+    {
+      const_cast <line_map_ordinary *> (map)->included_from = from;
 
-  location_t loc = linemap_line_start (set, 0, 0);
+      return linemap_line_start (set, 0, 0);
+    }
 
-  return loc;
+  return 0;
 }
 
 /* The linemap containing LOC is being reparented to be
@@ -795,7 +800,7 @@ linemap_line_start (line_maps *set, linenum_type to_line,
 	  max_column_hint = 1;
 	  column_bits = 0;
 	  range_bits = 0;
-	  if (highest >= LINE_MAP_MAX_LOCATION)
+	  if (highest >= LINE_MAP_MAX_LOCATION - 1)
 	    goto overflowed;
 	}
       else
@@ -822,12 +827,16 @@ linemap_line_start (line_maps *set, linenum_type to_line,
 	      >= (((uint64_t) 1)
 		  << (CHAR_BIT * sizeof (linenum_type) - column_bits)))
 	  || range_bits < map->m_range_bits)
-	map = linemap_check_ordinary
+	{
+	  map = linemap_check_ordinary
 	        (const_cast <line_map *>
 		  (linemap_add (set, LC_RENAME,
 				ORDINARY_MAP_IN_SYSTEM_HEADER_P (map),
 				ORDINARY_MAP_FILE_NAME (map),
 				to_line)));
+	  if (!map)
+	    return 0;
+	}
       map->m_column_and_range_bits = column_bits;
       map->m_range_bits = range_bits;
       r = (MAP_START_LOCATION (map)
@@ -897,7 +906,7 @@ linemap_position_for_column (line_maps *set, unsigned int to_column)
 	  line_map_ordinary *map = LINEMAPS_LAST_ORDINARY_MAP (set);
 	  r = linemap_line_start (set, SOURCE_LINE (map, r), to_column + 50);
 	  map = LINEMAPS_LAST_ORDINARY_MAP (set);
-	  if (map->m_column_and_range_bits == 0)
+	  if (map->m_column_and_range_bits == 0 || r == 0)
 	    {
 	      /* ...then the linemap has column-tracking disabled,
 		 presumably due to exceeding either

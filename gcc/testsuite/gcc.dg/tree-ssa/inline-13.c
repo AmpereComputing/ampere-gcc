@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fno-early-inlining -fdump-tree-fixup_cfg3" } */
+/* { dg-options "-O2 -fno-early-inlining -fdump-tree-fixup_cfg5" } */
 
 int n;
 
@@ -24,4 +24,4 @@ foo (void)
 }
 
 /* Abnormal edges should be properly elided after IPA inlining of bar.  */
-/* { dg-final { scan-tree-dump-times "bb" 1 "fixup_cfg3" } } */
+/* { dg-final { scan-tree-dump-times "bb" 1 "fixup_cfg5" } } */

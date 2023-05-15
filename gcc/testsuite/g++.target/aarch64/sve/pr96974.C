@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-Ofast -march=armv8.2-a+sve -fdisable-tree-fre4 -fdump-tree-slp-details" } */
+/* { dg-options "-Ofast -march=armv8.2-a+sve -fno-tree-fre -fdump-tree-slp-details" } */
 
 float a;
 int

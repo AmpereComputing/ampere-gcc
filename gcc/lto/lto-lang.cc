@@ -37,6 +37,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "lto-common.h"
 #include "stringpool.h"
 #include "attribs.h"
+#include "opts.h"
 
 /* LTO specific dumps.  */
 int lto_link_dump_id, decl_merge_dump_id, partition_dump_id;
@@ -864,6 +865,18 @@ lto_post_options (const char **pfilename ATTRIBUTE_UNUSED)
   if (flag_wpa && flag_ltrans)
     error ("%<-fwpa%> and %<-fltrans%> are mutually exclusive");
 
+  if (flag_mem_layout_trans)
+    {
+      /* Non "Optimization" lto-related options should be set per function
+	 basis, so default values for these options are given here.  */
+      if (!OPTION_SET_P (flag_ltrans_devirtualize)
+	  && (flag_wpa || flag_ltrans))
+	flag_ltrans_devirtualize = 1;
+
+      if (!OPTION_SET_P (flag_wpt) && !flag_ltrans)
+	flag_wpt = 1;
+    }
+
   if (flag_ltrans)
     {
       flag_generate_lto = 0;
@@ -871,6 +884,12 @@ lto_post_options (const char **pfilename ATTRIBUTE_UNUSED)
       /* During LTRANS, we are not looking at the whole program, only
 	 a subset of the whole callgraph.  */
       flag_whole_program = 0;
+
+      /* Since full devirtualization at LTRANS requires streaming extra data
+	 on vtables, it only takes effect when flag_ltrans_devirtualize is
+	 also on.  */
+      if (!flag_ltrans_devirtualize)
+	flag_devirtualize_fully = 0;
     }
 
   if (flag_wpa)
@@ -888,6 +907,7 @@ lto_post_options (const char **pfilename ATTRIBUTE_UNUSED)
       flag_incremental_link = INCREMENTAL_LINK_LTO;
       flag_whole_program = 0;
       flag_wpa = 0;
+      flag_wpt = 0;
       flag_generate_lto = 1;
       /* It would be cool to produce .o file directly, but our current
 	 simple objects does not contain the lto symbol markers.  Go the slow

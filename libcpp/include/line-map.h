@@ -610,7 +610,7 @@ linemap_check_ordinary (line_map *map)
 inline const line_map_ordinary *
 linemap_check_ordinary (const line_map *map)
 {
-  linemap_assert (MAP_ORDINARY_P (map));
+  linemap_assert (!map || MAP_ORDINARY_P (map));
   return (const line_map_ordinary *)map;
 }
 

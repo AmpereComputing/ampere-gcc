@@ -229,6 +229,9 @@ enum lto_section_type
   LTO_section_ipa_sra,
   LTO_section_odr_types,
   LTO_section_ipa_modref,
+  LTO_section_ipa_guarded_deref,
+  LTO_section_ipa_align,
+  LTO_section_ipa_sizeof,
   LTO_N_SECTION_TYPES		/* Must be last.  */
 };
 

@@ -129,10 +129,15 @@ unpack_ts_base_value_fields (struct bitpack_d *bp, tree expr)
     bp_unpack_value (bp, 1);
   TREE_ASM_WRITTEN (expr) = (unsigned) bp_unpack_value (bp, 1);
   if (TYPE_P (expr))
-    TYPE_ARTIFICIAL (expr) = (unsigned) bp_unpack_value (bp, 1);
+    {
+      TYPE_ARTIFICIAL (expr) = (unsigned) bp_unpack_value (bp, 1);
+      TYPE_CXX_LOCAL (expr) = (unsigned) bp_unpack_value (bp, 1);
+    }
   else
-    TREE_NO_WARNING (expr) = (unsigned) bp_unpack_value (bp, 1);
-  TREE_NOTHROW (expr) = (unsigned) bp_unpack_value (bp, 1);
+    {
+      TREE_NO_WARNING (expr) = (unsigned) bp_unpack_value (bp, 1);
+      TREE_NOTHROW (expr) = (unsigned) bp_unpack_value (bp, 1);
+    }
   TREE_STATIC (expr) = (unsigned) bp_unpack_value (bp, 1);
   if (TREE_CODE (expr) != TREE_BINFO)
     TREE_PRIVATE (expr) = (unsigned) bp_unpack_value (bp, 1);
@@ -392,6 +397,9 @@ unpack_ts_type_common_value_fields (struct bitpack_d *bp, tree expr)
       TYPE_TRANSPARENT_AGGR (expr) = (unsigned) bp_unpack_value (bp, 1);
       TYPE_FINAL_P (expr) = (unsigned) bp_unpack_value (bp, 1);
       TYPE_CXX_ODR_P (expr) = (unsigned) bp_unpack_value (bp, 1);
+      TYPE_OFFSETOF_P (expr) = (unsigned) bp_unpack_value (bp, 1);
+      TYPE_NON_ESCAPING_P (expr) = (unsigned) bp_unpack_value (bp, 1);
+      TYPE_SIZEOF_P (expr) = (unsigned) bp_unpack_value (bp, 1);
     }
   else if (TREE_CODE (expr) == ARRAY_TYPE)
     TYPE_NONALIASED_COMPONENT (expr) = (unsigned) bp_unpack_value (bp, 1);
@@ -659,7 +667,10 @@ lto_input_ts_common_tree_pointers (class lto_input_block *ib,
 				   class data_in *data_in, tree expr)
 {
   if (TREE_CODE (expr) != IDENTIFIER_NODE)
+  {
     TREE_TYPE (expr) = stream_read_tree_ref (ib, data_in);
+    TYPE_SIZEOF_TYPE (expr) = stream_read_tree_ref (ib, data_in);
+  }
 }
 
 

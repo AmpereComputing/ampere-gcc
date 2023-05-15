@@ -1,6 +1,6 @@
 // PR tree-optimization/83541
 // { dg-do compile }
-// { dg-options "-O3 -std=c++17 -ffast-math -fdump-tree-evrp"  }
+// { dg-options "-O3 -fno-tree-fre -std=c++17 -ffast-math -fdump-tree-evrp"  }
 
 #include <limits>
 

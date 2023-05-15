@@ -16,7 +16,7 @@ int foo (int *p, int b)
 }
 
 /* { dg-final { scan-tree-dump-not "Deleted dead store" "dse1"} } */
-/* { dg-final { scan-tree-dump-not "Deleted dead store" "dse2"} } */
 /* { dg-final { scan-tree-dump-not "Deleted dead store" "dse3"} } */
-/* { dg-final { scan-tree-dump-not "Deleted dead store" "dse5"} } */
+/* { dg-final { scan-tree-dump-not "Deleted dead store" "dse4"} } */
+/* { dg-final { scan-tree-dump-not "Deleted dead store" "dse6"} } */
 

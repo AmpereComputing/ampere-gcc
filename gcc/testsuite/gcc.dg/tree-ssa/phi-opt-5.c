@@ -19,8 +19,8 @@ float repl1 (float varx)
 /* phiopt1 confused by predictors.  */
 /* { dg-final { scan-tree-dump "varx.*MIN_EXPR.*1\\.0" "phiopt1" { xfail *-*-* } } } */
 /* { dg-final { scan-tree-dump "varx.*MAX_EXPR.*0\\.0" "phiopt1" { xfail *-*-* } } } */
-/* { dg-final { scan-tree-dump "varx.*MIN_EXPR.*1\\.0" "phiopt2"} } */
-/* { dg-final { scan-tree-dump "varx.*MAX_EXPR.*0\\.0" "phiopt2"} } */
+/* { dg-final { scan-tree-dump "varx.*MIN_EXPR.*1\\.0" "phiopt3"} } */
+/* { dg-final { scan-tree-dump "varx.*MAX_EXPR.*0\\.0" "phiopt3"} } */
 
 float repl2 (float vary)
 {
@@ -40,8 +40,8 @@ float repl2 (float vary)
 /* phiopt1 confused by predictors.  */
 /* { dg-final { scan-tree-dump "vary.*MAX_EXPR.*0\\.0" "phiopt1" { xfail *-*-* } } } */
 /* { dg-final { scan-tree-dump "vary.*MIN_EXPR.*1\\.0" "phiopt1" { xfail *-*-* } } } */
-/* { dg-final { scan-tree-dump "vary.*MAX_EXPR.*0\\.0" "phiopt2"} } */
-/* { dg-final { scan-tree-dump "vary.*MIN_EXPR.*1\\.0" "phiopt2"} } */
+/* { dg-final { scan-tree-dump "vary.*MAX_EXPR.*0\\.0" "phiopt3"} } */
+/* { dg-final { scan-tree-dump "vary.*MIN_EXPR.*1\\.0" "phiopt3"} } */
 
 float repl3 (float varz, float vara, float varb)
 {
@@ -62,5 +62,5 @@ float repl3 (float varz, float vara, float varb)
 
 /* phiopt1 confused by predictors.  */
 /* { dg-final { scan-tree-dump "vara.*MAX_EXPR" "phiopt1" { xfail *-*-* } } } */
-/* { dg-final { scan-tree-dump "if .*varz" "phiopt2"} } */
-/* { dg-final { scan-tree-dump "vara.*MAX_EXPR" "phiopt2"} } */
+/* { dg-final { scan-tree-dump "if .*varz" "phiopt3"} } */
+/* { dg-final { scan-tree-dump "vara.*MAX_EXPR" "phiopt3"} } */

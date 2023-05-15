@@ -10384,8 +10384,10 @@ build_rtti_vtbl_entries (tree binfo, vtbl_init_data* vid)
   offset = size_diffop_loc (input_location,
 			BINFO_OFFSET (vid->rtti_binfo), BINFO_OFFSET (b));
 
-  /* The second entry is the address of the typeinfo object.  */
-  if (flag_rtti)
+  /* The second entry is the address of the typeinfo object.  Full
+     devirtualization uses typeinfo as type marker of class, it is also
+     generated even -fno-rtti is specified.  */
+  if (flag_rtti || (flag_devirtualize_fully && flag_lto))
     decl = build_address (get_tinfo_decl (t));
   else
     decl = integer_zero_node;

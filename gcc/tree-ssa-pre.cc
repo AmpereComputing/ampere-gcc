@@ -2875,9 +2875,25 @@ create_expression_by_pieces (basic_block block, pre_expr expr,
 	  tree fn = NULL_TREE;
 	  if (currop->op0)
 	    {
-	      fn = find_or_generate_expression (block, currop->op0, stmts);
-	      if (!fn)
-		return NULL_TREE;
+	      if (virtual_method_call_p (currop->op0))
+		{
+		  tree exp = OBJ_TYPE_REF_EXPR (currop->op0);
+		  tree obj = OBJ_TYPE_REF_OBJECT (currop->op0);
+
+		  if (!(exp = find_or_generate_expression (block, exp, stmts)))
+		    return NULL_TREE;
+		  if (!(obj = find_or_generate_expression (block, obj, stmts)))
+		    return NULL_TREE;
+
+		  fn = build3 (OBJ_TYPE_REF, TREE_TYPE (currop->op0), exp, obj,
+			       OBJ_TYPE_REF_TOKEN (currop->op0));
+		}
+	      else
+		{
+		  fn = find_or_generate_expression (block, currop->op0, stmts);
+		  if (!fn)
+		    return NULL_TREE;
+	        }
 	    }
 	  if (currop->op1)
 	    {
@@ -2899,6 +2915,16 @@ create_expression_by_pieces (basic_block block, pre_expr expr,
 	    {
 	      call = gimple_build_call_vec (fn, args);
 	      gimple_call_set_fntype (call, currop->type);
+
+	      if (virtual_method_call_p (currop->op0))
+		{
+		  gcc_assert (!ref->result_vdef);
+		  gimple_call_set_nothrow (call, true);
+		  if (ref->vuse)
+		    gimple_call_set_pure (call, true);
+		  else
+		   gimple_call_set_const (call, true);
+		}
 	    }
 	  else
 	    call = gimple_build_call_internal_vec ((internal_fn)currop->clique,

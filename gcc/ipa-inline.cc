@@ -1185,6 +1185,7 @@ edge_badness (struct cgraph_edge *edge, bool dump)
   edge_time = estimate_edge_time (edge, &unspec_edge_time);
   hints = estimate_edge_hints (edge);
   gcc_checking_assert (edge_time >= 0);
+
   /* Check that inlined time is better, but tolerate some roundoff issues.
      FIXME: When callee profile drops to 0 we account calls more.  This
      should be fixed by never doing that.  */

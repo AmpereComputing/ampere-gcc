@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdump-tree-evrp -fno-tree-fre -fdisable-tree-ethread" } */
+/* { dg-options "-O2 -fdump-tree-evrp -fno-tree-fre -fdisable-tree-ethread1" } */
 
 void kill(void);
 

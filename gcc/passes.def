@@ -150,10 +150,12 @@ along with GCC; see the file COPYING3.  If not see
 
   INSERT_PASSES_AFTER (all_regular_ipa_passes)
   NEXT_PASS (pass_analyzer);
+  NEXT_PASS (pass_ipa_sizeof);
   NEXT_PASS (pass_ipa_odr);
   NEXT_PASS (pass_ipa_whole_program_visibility);
   NEXT_PASS (pass_ipa_profile);
   NEXT_PASS (pass_ipa_icf);
+  NEXT_PASS (pass_ipa_guarded_deref);
   NEXT_PASS (pass_ipa_devirt);
   NEXT_PASS (pass_ipa_cp);
   NEXT_PASS (pass_ipa_sra);
@@ -171,6 +173,56 @@ along with GCC; see the file COPYING3.  If not see
      would result in missed optimizations due to this restriction.  */
   NEXT_PASS (pass_ipa_comdats);
   TERMINATE_PASS_LIST (all_regular_ipa_passes)
+
+  INSERT_PASSES_AFTER (all_regular_ipa_wpt_passes)
+  NEXT_PASS (pass_ipa_eliminate_cast);
+  NEXT_PASS (pass_ipa_calloc_type_specialization);
+  NEXT_PASS (pass_ipa_void_ptr_param_specialization);
+  NEXT_PASS (pass_ipa_alignment_analysis_and_transformation);
+  NEXT_PASS (pass_ipa_wpt_local_optimizations);
+  PUSH_INSERT_PASSES_WITHIN (pass_ipa_wpt_local_optimizations)
+      NEXT_PASS (pass_fixup_cfg);
+      NEXT_PASS (pass_ccp, true /* nonzero_p */);
+      NEXT_PASS (pass_forwprop);
+      NEXT_PASS (pass_copy_prop);
+      NEXT_PASS (pass_early_vrp);
+      NEXT_PASS (pass_fre, true /* may_iterate */);
+      NEXT_PASS (pass_dse);
+      NEXT_PASS (pass_cd_dce);
+      NEXT_PASS (pass_merge_phi);
+      NEXT_PASS (pass_phiopt, false /* early_p */);
+      NEXT_PASS (pass_forwprop);
+      NEXT_PASS (pass_rebuild_cgraph_edges);
+  POP_INSERT_PASSES ()
+  NEXT_PASS (pass_ipa_post_devirt);
+  NEXT_PASS (pass_ipa_localize_var);
+  NEXT_PASS (pass_ipa_field_merge);
+  NEXT_PASS (pass_ipa_cso, false /* is_fixup */);
+  NEXT_PASS (pass_ipa_wpt_local_optimizations);
+  PUSH_INSERT_PASSES_WITHIN_NUM (pass_ipa_wpt_local_optimizations, 2)
+      NEXT_PASS (pass_fixup_cfg);
+      NEXT_PASS (pass_early_vrp);
+      NEXT_PASS (pass_fre, true /* may_iterate */);
+      NEXT_PASS (pass_dse);
+      NEXT_PASS (pass_dce);
+      NEXT_PASS (pass_remove_cgraph_callee_edges);
+      NEXT_PASS (pass_local_pure_const);
+      NEXT_PASS (pass_early_thread_jumps, /*first=*/false);
+      NEXT_PASS (pass_rebuild_cgraph_edges);
+  POP_INSERT_PASSES ()
+  NEXT_PASS (pass_ipa_cso, true /* is_fixup */);
+  NEXT_PASS (pass_ipa_retyper);
+  NEXT_PASS (pass_ipa_array_dse);
+  /* Vrull */
+  NEXT_PASS (pass_ipa_dead_field_elimination);
+  NEXT_PASS (pass_ipa_field_reorder);
+  /* Andrew */
+  NEXT_PASS (pass_ipa_struct_reorg);
+  /* Ampere */
+  NEXT_PASS (pass_ipa_struct_dco);
+  NEXT_PASS (pass_ipa_wpt_modref);
+  NEXT_PASS (pass_ipa_type_escape_analysis);
+  TERMINATE_PASS_LIST (all_regular_ipa_wpt_passes)
 
   /* Simple IPA passes executed after the regular passes.  In WHOPR mode the
      passes are executed after partitioning and thus see just parts of the
@@ -232,6 +284,7 @@ along with GCC; see the file COPYING3.  If not see
       NEXT_PASS (pass_ch);
       NEXT_PASS (pass_lower_complex);
       NEXT_PASS (pass_sra);
+      NEXT_PASS (pass_lro);
       /* The dom pass will also resolve all __builtin_constant_p calls
          that are still there to 0.  This has to be done after some
 	 propagations have already run, but before some more dead code
@@ -275,6 +328,7 @@ along with GCC; see the file COPYING3.  If not see
           /* Before loop_init we rewrite no longer addressed locals into SSA
 	     form if possible.  */
 	  NEXT_PASS (pass_tree_loop_init);
+	  NEXT_PASS (pass_loop_mgo);
 	  NEXT_PASS (pass_tree_unswitch);
 	  NEXT_PASS (pass_scev_cprop);
 	  NEXT_PASS (pass_loop_split);
@@ -305,6 +359,7 @@ along with GCC; see the file COPYING3.  If not see
 	      NEXT_PASS (pass_dce);
 	  POP_INSERT_PASSES ()
 	  NEXT_PASS (pass_predcom);
+	  NEXT_PASS (pass_gen_builtin);
 	  NEXT_PASS (pass_complete_unroll);
 	  NEXT_PASS (pass_pre_slp_scalar_cleanup);
 	  PUSH_INSERT_PASSES_WITHIN (pass_pre_slp_scalar_cleanup)
@@ -328,8 +383,10 @@ along with GCC; see the file COPYING3.  If not see
       NEXT_PASS (pass_simduid_cleanup);
       NEXT_PASS (pass_lower_vector_ssa);
       NEXT_PASS (pass_lower_switch);
+      NEXT_PASS (pass_cso);
       NEXT_PASS (pass_cse_reciprocals);
-      NEXT_PASS (pass_reassoc, false /* early_p */);
+      NEXT_PASS (pass_optimize_widening_mul, true /* early_p */);
+      NEXT_PASS (pass_reassoc, false);
       NEXT_PASS (pass_strength_reduction);
       NEXT_PASS (pass_split_paths);
       NEXT_PASS (pass_tracer);
@@ -352,7 +409,7 @@ along with GCC; see the file COPYING3.  If not see
       NEXT_PASS (pass_sink_code, true /* unsplit edges */);
       NEXT_PASS (pass_phiopt, false /* early_p */);
       NEXT_PASS (pass_fold_builtins);
-      NEXT_PASS (pass_optimize_widening_mul);
+      NEXT_PASS (pass_optimize_widening_mul, false /* early_p */);
       NEXT_PASS (pass_store_merging);
       NEXT_PASS (pass_tail_calls);
       /* If DCE is not run before checking for uninitialized uses,

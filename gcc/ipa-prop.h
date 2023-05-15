@@ -1096,6 +1096,18 @@ public:
 /* Function summary where the IPA CP transformations are actually stored.  */
 extern GTY(()) function_summary <ipcp_transformation *> *ipcp_transformation_sum;
 
+struct alignment_data
+{
+  int param;
+  int alignment;
+};
+
+typedef hash_map<cgraph_edge *, alignment_data> edge_align_map;
+typedef hash_map<cgraph_node *, alignment_data> node_align_map;
+
+extern edge_align_map *callsite_data;
+extern edge_align_map *callsite_data2;
+
 /* Creating and freeing ipa_node_params and ipa_edge_args.  */
 void ipa_create_all_node_params (void);
 void ipa_create_all_edge_args (void);

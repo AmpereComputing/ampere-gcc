@@ -1,5 +1,5 @@
 /* { dg-do compile } */
-/* { dg-options "-O2 -fdisable-tree-ethread" } */
+/* { dg-options "-O2 -fdisable-tree-ethread1" } */
 
 /* Note: Threader will collapse loop.  */
 

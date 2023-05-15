@@ -19,6 +19,6 @@ void fun2(uint32_t *x, int n)
 
 #include "bic-bitmask.h"
 
-/* { dg-final { scan-tree-dump-times {<=\s* 255} 1 dce7 { target vect_int } } } */
-/* { dg-final { scan-tree-dump-not {&\s* 4294967040} dce7 { target vect_int } } } */
+/* { dg-final { scan-tree-dump-times {<=\s* 255} 1 dce8 { target vect_int } } } */
+/* { dg-final { scan-tree-dump-not {&\s* 4294967040} dce8 { target vect_int } } } */
 

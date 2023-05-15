@@ -28,6 +28,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "tree.h"
 #include "gimple.h"
 #include "cfghooks.h"
+#include "cfg.h"
 #include "alloc-pool.h"
 #include "tree-pass.h"
 #include "tree-streamer.h"
@@ -501,9 +502,36 @@ do_whole_program_analysis (void)
   /* We are about to launch the final LTRANS phase, stop the WPA timer.  */
   timevar_pop (TV_WHOPR_WPA);
 
+  /* Execute whole program post transformations after WPA analysis stage.  */
+  if (flag_wpt)
+    {
+      cgraph_node *cnode;
+
+      execute_regular_ipa_post_whole_program_transforms ();
+
+      timevar_push (TV_WHOPR_WPT);
+
+      /* Except size information, function summary should be released when
+	 getting here.  */
+      gcc_assert (!ipa_fn_summaries);
+      ipa_free_size_summary ();
+
+      FOR_EACH_DEFINED_FUNCTION (cnode)
+	{
+	  /* Recompute size summary, since function bodies might be changed
+	     or some new functions come out.  */
+	  if (!cnode->alias)
+	    compute_fn_summary (cnode, true);
+	}
+
+      ipa_free_fn_summary ();
+      ipa_free_all_structures_after_iinln ();
+
+      timevar_pop (TV_WHOPR_WPT);
+    }
+
   /* We are no longer going to stream in anything.  Free some memory.  */
   lto_free_file_name_hash ();
-
 
   timevar_push (TV_WHOPR_PARTITIONING);
 

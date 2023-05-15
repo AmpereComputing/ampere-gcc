@@ -1375,6 +1375,9 @@ struct GTY(()) tree_base {
        DECL_NONALIASED in
 	  VAR_DECL
 
+       TYPE_CXX_LOCAL in
+	   all types
+
    deprecated_flag:
 
        TREE_DEPRECATED in
@@ -1446,6 +1449,7 @@ struct GTY(()) tree_base {
 struct GTY(()) tree_typed {
   struct tree_base base;
   tree type;
+  tree sizeof_type;
 };
 
 struct GTY(()) tree_common {
@@ -1700,7 +1704,11 @@ struct GTY(()) tree_type_common {
   unsigned typeless_storage : 1;
   unsigned empty_flag : 1;
   unsigned indivisible_p : 1;
-  unsigned spare : 16;
+
+  unsigned offsetof_flag : 1;
+  unsigned non_escaping_p : 1;
+  unsigned sizeof_flag : 1;
+  unsigned spare : 13;
 
   alias_set_type alias_set;
   tree pointer_to;
@@ -1712,6 +1720,7 @@ struct GTY(()) tree_type_common {
   tree canonical;
   tree next_variant;
   tree main_variant;
+  tree original_type;
   tree context;
   tree name;
 };

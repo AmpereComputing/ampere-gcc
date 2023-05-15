@@ -8968,6 +8968,14 @@ cp_parser_unary_expression (cp_parser *parser, cp_id_kind * pidk,
 
 	case ADDR_EXPR:
 	   non_constant_p = NIC_ADDR;
+	  /* Set the offsetof flag for exprs like &base->field.  */
+	  if (unary_operator == ADDR_EXPR
+	      && TREE_CODE (cast_expression) == COMPONENT_REF)
+	    {
+	      tree base_type = TREE_TYPE (TREE_OPERAND (cast_expression, 0));
+	      if (base_type && TREE_CODE (base_type) == RECORD_TYPE)
+		TYPE_OFFSETOF_P (base_type) = 1;
+	    }
 	  /* Fall through.  */
 	case BIT_NOT_EXPR:
 	  expression = build_x_unary_op (loc, unary_operator,

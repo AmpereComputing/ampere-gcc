@@ -21,6 +21,9 @@ along with GCC; see the file COPYING3.  If not see
 #ifndef GCC_IPA_UTILS_H
 #define GCC_IPA_UTILS_H
 
+#include "cgraph.h"
+#include "function.h"
+
 struct ipa_dfs_info {
   int dfn_number;
   int low_link;
@@ -33,6 +36,49 @@ struct ipa_dfs_info {
   PTR aux;
 };
 
+class cfun_context
+{
+  bool dont_pop;
+
+  void push (tree fndecl)
+  {
+    push_cfun (DECL_STRUCT_FUNCTION (fndecl));
+    gcc_assert (cfun);
+  }
+
+public:
+  cfun_context (tree fndecl, bool dont_pop = false)
+    : dont_pop (dont_pop)
+  {
+    push (fndecl);
+  }
+
+  cfun_context (cgraph_node *node, bool dont_pop = false)
+    : dont_pop (dont_pop)
+  {
+    push (node->decl);
+  }
+
+  cfun_context (function *fun = NULL, bool dont_pop = false)
+    : dont_pop (dont_pop)
+  {
+    push_cfun (fun);
+  }
+
+  ~cfun_context ()
+  {
+    pop ();
+  }
+
+  void pop ()
+  {
+    if (!dont_pop)
+      {
+	pop_cfun ();
+	dont_pop = true;
+      }
+  }
+};
 
 /* In ipa-utils.cc  */
 void ipa_print_order (FILE*, const char *, struct cgraph_node**, int);
@@ -64,6 +110,7 @@ extern bool thunk_expansion;
 void build_type_inheritance_graph (void);
 void rebuild_type_inheritance_graph (void);
 void update_type_inheritance_graph (void);
+void identify_whole_program_local_types (void);
 vec <cgraph_node *>
 possible_polymorphic_call_targets (tree, HOST_WIDE_INT,
 				   ipa_polymorphic_call_context,
@@ -86,7 +133,8 @@ tree vtable_pointer_value_to_binfo (const_tree);
 bool vtable_pointer_value_to_vtable (const_tree, tree *, unsigned HOST_WIDE_INT *);
 tree subbinfo_with_vtable_at_offset (tree, unsigned HOST_WIDE_INT, tree);
 void compare_virtual_tables (varpool_node *, varpool_node *);
-bool type_all_derivations_known_p (const_tree);
+tree get_type_vtable (tree);
+bool type_all_derivations_known_p (tree);
 bool type_known_to_have_no_derivations_p (tree);
 bool contains_polymorphic_type_p (const_tree);
 void register_odr_type (tree);

@@ -1910,9 +1910,9 @@ static const struct tune_params ampere1_tunings =
    AARCH64_FUSE_ALU_BRANCH /* adds, ands, bics, ccmp, ccmn */ |
    AARCH64_FUSE_CMP_BRANCH),
   /* fusible_ops  */
-  "32",		/* function_align.  */
+  "32:28",	/* function_align.  */
   "4",		/* jump_align.  */
-  "32:16",	/* loop_align.  */
+  "32:12",	/* loop_align.  */
   2,	/* int_reassoc_width.  */
   4,	/* fp_reassoc_width.  */
   2,	/* vec_reassoc_width.  */
@@ -1920,7 +1920,7 @@ static const struct tune_params ampere1_tunings =
   2,	/* min_div_recip_mul_df.  */
   0,	/* max_case_values.  */
   tune_params::AUTOPREFETCHER_WEAK,	/* autoprefetcher_model.  */
-  (AARCH64_EXTRA_TUNE_NO_LDP_COMBINE),	/* tune_flags.  */
+  (AARCH64_EXTRA_TUNE_AVOID_SLOW_LDP),	/* tune_flags.  */
   &ampere1_prefetch_tune
 };
 
@@ -1947,9 +1947,9 @@ static const struct tune_params ampere1a_tunings =
    AARCH64_FUSE_CMP_BRANCH | AARCH64_FUSE_ALU_CBZ |
    AARCH64_FUSE_ADDSUB_2REG_CONST1),
   /* fusible_ops  */
-  "32",		/* function_align.  */
+  "32:28",	/* function_align.  */
   "4",		/* jump_align.  */
-  "32:16",	/* loop_align.  */
+  "32:12",	/* loop_align.  */
   2,	/* int_reassoc_width.  */
   4,	/* fp_reassoc_width.  */
   2,	/* vec_reassoc_width.  */
@@ -1957,7 +1957,8 @@ static const struct tune_params ampere1a_tunings =
   2,	/* min_div_recip_mul_df.  */
   0,	/* max_case_values.  */
   tune_params::AUTOPREFETCHER_WEAK,	/* autoprefetcher_model.  */
-  (AARCH64_EXTRA_TUNE_NO_LDP_COMBINE),	/* tune_flags.  */
+  (AARCH64_EXTRA_TUNE_AVOID_SLOW_LDP |
+   AARCH64_EXTRA_TUNE_FMA_HEURISTIC),	/* tune_flags.  */
   &ampere1_prefetch_tune
 };
 
@@ -3402,8 +3403,7 @@ aarch64_reassociation_width (unsigned opc, machine_mode mode)
     return aarch64_tune_params.vec_reassoc_width;
   if (INTEGRAL_MODE_P (mode))
     return aarch64_tune_params.int_reassoc_width;
-  /* Avoid reassociating floating point addition so we emit more FMAs.  */
-  if (FLOAT_MODE_P (mode) && opc != PLUS_EXPR)
+  if (FLOAT_MODE_P (mode))
     return aarch64_tune_params.fp_reassoc_width;
   return 1;
 }
@@ -17735,6 +17735,17 @@ aarch64_override_options_internal (struct gcc_options *opts)
     SET_OPTION_IF_UNSET (opts, &global_options_set,
 			 aarch64_sve_compare_costs, 0);
 
+  if (aarch64_tune_params.extra_tuning_flags
+  	& AARCH64_EXTRA_TUNE_FMA_HEURISTIC)
+    {
+      SET_OPTION_IF_UNSET (opts, &global_options_set, param_avoid_fma_max_bits,
+			   512);
+      SET_OPTION_IF_UNSET (opts, &global_options_set, flag_skip_fma_heuristic,
+			   1);
+      SET_OPTION_IF_UNSET (opts, &global_options_set,
+			   param_op_count_prefer_reassoc, 8);
+    }
+
   /* Set up parameters to be used in prefetching algorithm.  Do not
      override the defaults unless we are tuning for a core we have
      researched values for.  */
@@ -25922,22 +25933,123 @@ aarch64_mergeable_load_pair_p (machine_mode mode, rtx mem1, rtx mem2)
   return aarch64_check_consecutive_mems (&mem1, &mem2, nullptr);
 }
 
+static bool
+streaming_load_pair_p (rtx_insn *load_insn, rtx *operands)
+{
+  basic_block bb = BLOCK_FOR_INSN (load_insn);
+  edge e;
+  edge_iterator ei;
+  bool in_loop = false;
+
+  FOR_EACH_EDGE (e, ei, bb->succs)
+    if (e->dest == bb
+	&& !(e->flags & (EDGE_ABNORMAL | EDGE_ABNORMAL_CALL | EDGE_EH)))
+      {
+	in_loop = true;
+	break;
+      }
+
+  if (!in_loop)
+    return false;
+
+  rtx mem = operands[1];
+  rtx base, offset;
+
+  extract_base_offset_in_addr (mem, &base, &offset);
+
+  if (!base || !REG_P (base))
+    return false;
+
+  rtx_insn *insn;
+  poly_int64 stripe = 0;
+  poly_int64 stripe_limit = 256;
+
+  FOR_BB_INSNS (bb, insn)
+    {
+      if (!NONDEBUG_INSN_P (insn) || JUMP_P (insn))
+	continue;
+
+      if (CALL_P (insn))
+	{
+	  if (!RTL_CONST_OR_PURE_CALL_P (insn))
+	    return false;
+	  continue;
+	}
+
+      rtx pat = PATTERN (insn);
+      unsigned count = GET_CODE (pat) != PARALLEL ? 1 : XVECLEN (pat, 0);
+
+      for (unsigned i = 0; i < count; i++)
+	{
+	  rtx op = GET_CODE (pat) != PARALLEL ? pat : XVECEXP (pat, 0, i);
+
+	  if (GET_CODE (op) != SET)
+	    continue;
+
+	  rtx dst = SET_DEST (op);
+
+	  if (GET_CODE (dst) == PARALLEL)
+	    return false;
+
+	  if (GET_CODE (dst) == ZERO_EXTRACT
+	      || GET_CODE (dst) == STRICT_LOW_PART
+	      || GET_CODE (dst) == SUBREG)
+	    dst = XEXP (dst, 0);
+
+	  if (REG_P (dst))
+	    {
+	      if (REGNO (dst) != REGNO (base))
+		continue;
+
+	      if (dst != SET_DEST (op))
+		return false;
+
+	      rtx src = SET_SRC (op);
+
+	      if (GET_CODE (src) != PLUS && GET_CODE (src) != MINUS)
+		return false;
+
+	      rtx x0 = XEXP (src, 0);
+	      rtx x1 = XEXP (src, 1);
+	      poly_int64 value;
+
+	      if (!REG_P (x0) || REGNO (x0) != REGNO (dst)
+		  || !poly_int_rtx_p (x1, &value))
+		return false;
+
+	      if (GET_CODE (src) == PLUS)
+		stripe += value;
+	      else
+		stripe -= value;
+	    }
+	  else if (MEM_P (dst))
+	    return false;
+	}
+    }
+
+   if (known_eq (stripe, 0))
+     return false;
+   else if (known_lt (stripe, 0))
+     stripe = -stripe;
+   else if (!known_gt (stripe, 0))
+     return false;
+
+   if (known_le (stripe, stripe_limit))
+     return true;
+
+   return false;
+}
+
 /* Given OPERANDS of consecutive load/store, check if we can merge
    them into ldp/stp.  LOAD is true if they are load instructions.
    MODE is the mode of memory operands.  */
 
 bool
-aarch64_operands_ok_for_ldpstp (rtx *operands, bool load,
+aarch64_operands_ok_for_ldpstp (rtx_insn *insn, rtx *operands, bool load,
 				machine_mode mode)
 {
   enum reg_class rclass_1, rclass_2;
   rtx mem_1, mem_2, reg_1, reg_2;
-
-  /* Allow the tuning structure to disable LDP instruction formation
-     from combining instructions (e.g., in peephole2).  */
-  if (load && (aarch64_tune_params.extra_tuning_flags
-	       & AARCH64_EXTRA_TUNE_NO_LDP_COMBINE))
-    return false;
 
   if (load)
     {
@@ -26000,6 +26112,12 @@ aarch64_operands_ok_for_ldpstp (rtx *operands, bool load,
 
   /* Check if the registers are of same class.  */
   if (rclass_1 != rclass_2)
+    return false;
+
+  if (load
+      && (aarch64_tune_params.extra_tuning_flags
+	  & AARCH64_EXTRA_TUNE_AVOID_SLOW_LDP)
+      && !streaming_load_pair_p (insn, operands))
     return false;
 
   return true;
